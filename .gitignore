@@ -1,0 +1,40 @@
+# Secrets and local config - never commit these
+*.secret
+*.secrets
+*.env
+.env
+.env.*
+appsettings.local.json
+local.settings.json
+secrets.ps1
+*.pfx
+*.pem
+*.key
+
+# Credentials and tokens
+*token*.json
+*.credentials
+
+# PowerShell
+*.ps1xml.bak
+
+# Logs and output
+*.log
+logs/
+output/
+artifacts/
+diagnostics/
+
+# OS and editor cruft
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Build and temp
+bin/
+obj/
+temp/
+tmp/

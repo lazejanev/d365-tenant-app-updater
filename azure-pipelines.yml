@@ -1,0 +1,189 @@
+# =====================================================================
+# d365-tenant-app-updater
+# Automatically update all Dynamics 365 first-party apps across a tenant.
+#
+# This pipeline calls scripts/Update-TenantApps.ps1, which authenticates
+# as a service principal and updates apps on every environment it finds.
+#
+# DESIGN RULE: nothing is hardcoded in this file. Every value comes from
+# the variable group (Library) named 'D365-TenantAppUpdater'. No ids,
+# secrets, endpoints, api versions, or customer names live in this YAML.
+#
+# Environment scoping:
+#   environmentFilter  = allow-list. Only these environments are processed.
+#                        Blank means all environments.
+#   environmentExclude = deny-list. These environments are always skipped,
+#                        even if they match the filter. Use it to protect
+#                        production or anything you never want touched.
+#
+# App scoping:
+#   appExclude         = deny-list of app names/ids always skipped on every
+#                        environment. Pre-seeded with the F&O Provisioning App,
+#                        which needs the PPAC Custom Install Experience.
+#   usePacFallback     = when true, apps rejected by the API for a custom
+#                        install are retried with 'pac application install'
+#                        (best effort). Off by default. When on, an install
+#                        step below adds the Power Platform CLI to the agent.
+#
+# Before you run:
+#   1. Register the service principal as a Power Platform management app.
+#      See docs/permissions.md.
+#   2. Create the variable group 'D365-TenantAppUpdater' with every
+#      variable listed in docs/parameters.md.
+#   3. Link the variable group (already referenced below) and run.
+# =====================================================================
+
+name: '$(pipelineName)-$(Date:yyyyMMdd)$(Rev:.r)'
+
+# ---------------------------------------------------------------------
+# Runtime parameters
+#   These let an operator override the variable-group defaults for a
+#   single manual run. When left at the 'fromLibrary' sentinel, the
+#   script falls back to the value stored in the variable group.
+# ---------------------------------------------------------------------
+parameters:
+  - name: dumpDiagnostics
+    displayName: 'Dump installed vs available versions'
+    type: string
+    default: fromLibrary
+    values:
+      - fromLibrary
+      - 'true'
+      - 'false'
+
+  - name: retryFailedInstalls
+    displayName: 'Retry previously failed installs'
+    type: string
+    default: fromLibrary
+    values:
+      - fromLibrary
+      - 'true'
+      - 'false'
+
+  - name: whatIf
+    displayName: 'Plan only (do not install)'
+    type: string
+    default: fromLibrary
+    values:
+      - fromLibrary
+      - 'true'
+      - 'false'
+
+  - name: environmentFilter
+    displayName: 'Only these environments (name/id, comma separated, blank = use library)'
+    type: string
+    default: fromLibrary
+
+  - name: environmentExclude
+    displayName: 'Exempt these environments (name/id, comma separated, blank = use library)'
+    type: string
+    default: fromLibrary
+
+  - name: appExclude
+    displayName: 'Exempt these apps (name/id, comma separated, blank = use library)'
+    type: string
+    default: fromLibrary
+
+  - name: usePacFallback
+    displayName: 'Try PAC CLI fallback for custom-install apps'
+    type: string
+    default: fromLibrary
+    values:
+      - fromLibrary
+      - 'true'
+      - 'false'
+
+# ---------------------------------------------------------------------
+# Triggers
+#   Controlled outside the file. Enable the schedule if you want the
+#   updater to run automatically. Adjust and uncomment when ready.
+# ---------------------------------------------------------------------
+trigger: none
+pr: none
+
+# schedules:
+#   - cron: '0 2 * * *'
+#     displayName: 'Scheduled tenant app update'
+#     branches:
+#       include:
+#         - main
+#     always: true
+
+# ---------------------------------------------------------------------
+# Agent
+#   The image name comes from the variable group ($(agentVmImage)).
+# ---------------------------------------------------------------------
+pool:
+  vmImage: $(agentVmImage)
+
+# ---------------------------------------------------------------------
+# Variables
+#   Everything is sourced from the Library variable group.
+# ---------------------------------------------------------------------
+variables:
+  - group: D365-TenantAppUpdater
+
+stages:
+  - stage: UpdateApps
+    displayName: 'Update Dynamics 365 apps tenant wide'
+    jobs:
+      - job: Update
+        displayName: 'Run tenant app updater'
+        timeoutInMinutes: $[ variables.jobTimeoutMinutes ]
+        steps:
+          - checkout: self
+
+          # -----------------------------------------------------------
+          # Install the Power Platform CLI, only when the PAC fallback is
+          # requested for this run. The CLI .NET tool targets .NET 10, so
+          # ensure the agent has a compatible .NET SDK. Pin the version
+          # with $(pacCliVersion), or leave it blank to take the latest.
+          # -----------------------------------------------------------
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              $ver = "$(pacCliVersion)".Trim()
+              Write-Host "Installing Power Platform CLI (Microsoft.PowerApps.CLI.Tool) version: $(if ([string]::IsNullOrWhiteSpace($ver)) { 'latest' } else { $ver })"
+              if ([string]::IsNullOrWhiteSpace($ver)) {
+                dotnet tool install --global Microsoft.PowerApps.CLI.Tool
+              } else {
+                dotnet tool install --global Microsoft.PowerApps.CLI.Tool --version $ver
+              }
+              Write-Host "##vso[task.prependpath]$HOME/.dotnet/tools"
+            displayName: 'Install Power Platform CLI'
+            condition: >
+              and(succeeded(),
+                  or(eq('${{ parameters.usePacFallback }}', 'true'),
+                     and(eq('${{ parameters.usePacFallback }}', 'fromLibrary'), eq(variables['usePacFallback'], 'true'))))
+
+          - task: PowerShell@2
+            displayName: 'Update applications that have an update available'
+            inputs:
+              targetType: 'filePath'
+              filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
+              pwsh: true
+              failOnStderr: false
+              arguments: >
+                -ClientId "$(ClientId)"
+                -ClientSecret "$(ClientSecret)"
+                -TenantId "$(TenantId)"
+                -Authority "$(authority)"
+                -BapResource "$(bapResource)"
+                -BapApiRoot "$(bapApiRoot)"
+                -BapApiVersion "$(bapApiVersion)"
+                -PowerPlatformScope "$(powerPlatformScope)"
+                -PollIntervalSec "$(pollIntervalSec)"
+                -PollTimeoutMin "$(pollTimeoutMin)"
+                -DumpDiagnostics "${{ parameters.dumpDiagnostics }}"
+                -RetryFailedInstalls "${{ parameters.retryFailedInstalls }}"
+                -WhatIf "${{ parameters.whatIf }}"
+                -EnvironmentFilter "${{ parameters.environmentFilter }}"
+                -EnvironmentExclude "${{ parameters.environmentExclude }}"
+                -AppExclude "${{ parameters.appExclude }}"
+                -UsePacFallback "${{ parameters.usePacFallback }}"
+                -DefaultDumpDiagnostics "$(dumpDiagnostics)"
+                -DefaultRetryFailedInstalls "$(retryFailedInstalls)"
+                -DefaultWhatIf "$(whatIf)"
+                -DefaultEnvironmentFilter "$(environmentFilter)"
+                -DefaultEnvironmentExclude "$(environmentExclude)"
+                -DefaultAppExclude "$(appExclude)"
+                -DefaultUsePacFallback "$(usePacFallback)"
