@@ -1,7 +1,39 @@
-# d365-tenant-app-updater
+<!-- ===================== HEADER BANNER ===================== -->
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b3d91,100:1e90ff&height=200&section=header&text=d365-tenant-app-updater&fontSize=40&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Update%20every%20Dynamics%20365%20app%20across%20a%20whole%20tenant%2C%20from%20one%20Azure%20DevOps%20pipeline&descAlignY=60&descSize=16" alt="d365-tenant-app-updater" />
+</p>
 
-Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, from a single Azure DevOps pipeline.
+<!-- ===================== STATUS BADGES ===================== -->
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT License" />
+  <img src="https://img.shields.io/badge/version-2.0.0-1e90ff?style=for-the-badge" alt="Version 2.0.0" />
+  <img src="https://img.shields.io/badge/PRs-welcome-0b3d91?style=for-the-badge" alt="PRs welcome" />
+  <img src="https://img.shields.io/badge/status-community%20project-111827?style=for-the-badge" alt="Community project" />
+</p>
 
+<!-- ===================== TECH BADGES ===================== -->
+<p align="center">
+  <img src="https://img.shields.io/badge/Dynamics%20365%20F%26O-002050?style=flat-square&logo=microsoftdynamics365&logoColor=white" alt="D365 F&O" />
+  <img src="https://img.shields.io/badge/Power%20Platform-742774?style=flat-square&logo=microsoftpowerplatform&logoColor=white" alt="Power Platform" />
+  <img src="https://img.shields.io/badge/Dataverse-0067B8?style=flat-square&logo=microsoft&logoColor=white" alt="Dataverse" />
+  <img src="https://img.shields.io/badge/Azure%20DevOps-0078D7?style=flat-square&logo=azuredevops&logoColor=white" alt="Azure DevOps" />
+  <img src="https://img.shields.io/badge/PowerShell-5391FE?style=flat-square&logo=powershell&logoColor=white" alt="PowerShell" />
+</p>
+
+<p align="center">
+  <b>Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, from a single Azure DevOps pipeline.</b>
+</p>
+
+<p align="center">
+  <a href="#the-goal">Goal</a> &bull;
+  <a href="#how-it-works">How it works</a> &bull;
+  <a href="#requirements-mandatory">Requirements</a> &bull;
+  <a href="#configuration-model-3-required-everything-else-optional">Configuration</a> &bull;
+  <a href="#setup">Setup</a> &bull;
+  <a href="docs/parameters.md">Parameters</a>
+</p>
+
+> [!NOTE]
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
 ---
@@ -18,9 +50,9 @@ It scales the same whether you have 3 environments or 30, which is exactly where
 
 ## How it works
 
-The pipeline runs one PowerShell script that uses **three tokens** and **two data sources** to make a safe update decision per app:
+The pipeline runs one PowerShell script that uses **three tokens** and **two data sources** to make a safe update decision per app.
 
-```
+```text
 Azure DevOps pipeline (azure-pipelines.yml)
         |
         v
@@ -39,35 +71,35 @@ Azure DevOps pipeline (azure-pipelines.yml)
         |
         |  4. For each environment:
         |       a. AVAILABLE versions  <- Power Platform App Management API
-        |          (/appmanagement/environments/{id}/applicationPackages)
         |       b. INSTALLED versions  <- Dataverse managed solutions
-        |          ({instanceUrl}/api/data/v9.2/solutions, ismanaged eq true)
-        |          The installed version of an app = the version of its
-        |          (anchor) managed solution.
+        |          (installed version of an app = version of its anchor
+        |           managed solution)
         |
         |  5. For each installed app:
         |       - skip if it is in appExclude
-        |       - if state = InstallFailed and retry is on -> retry the install
-        |       - else compare installed vs available; install ONLY when the
-        |         available version is strictly newer (never downgrade)
+        |       - if state = InstallFailed and retry is on -> retry
+        |       - else install ONLY when available is strictly newer
+        |         (never downgrade)
         |
-        |  6. Custom Install Experience apps (for example the F&O Provisioning
-        |     App) are rejected by the API. They are reported as
-        |     "manual-required" (never counted as failures), and can be
-        |     pre-skipped via appExclude, or attempted via the PAC CLI fallback.
+        |  6. Custom Install Experience apps (e.g. the F&O Provisioning App)
+        |     are reported as "manual-required", never counted as failures.
         |
         |  7. Print a per-environment and a tenant-wide summary.
         v
    Updated tenant
 ```
 
-### Why installed versions come from Dataverse
+<details>
+<summary><b>Why installed versions come from Dataverse</b></summary>
 
-The Power Platform App Management API tells you which apps exist and what the latest **available** version is, but it is not a reliable source for what is currently **installed**. The trustworthy source of the installed version is the app's **managed solution version** inside each environment's Dataverse. That is why the script reads `solutions` from Dataverse directly, and why the service principal needs an application-user role in each environment (see Requirements).
+The Power Platform App Management API tells you which apps exist and what the latest **available** version is, but it is not a reliable source for what is currently **installed**. The trustworthy source of the installed version is the app's **managed solution version** inside each environment's Dataverse. That is why the script reads `solutions` from Dataverse directly, and why the service principal needs an application-user role in each environment.
+</details>
 
-### Why it never downgrades
+<details>
+<summary><b>Why it never downgrades</b></summary>
 
-An app can legitimately be installed at a version newer than the catalog's currently-advertised version. A naive "installed not equal to available" check would try to reinstall/downgrade it. The script only acts when the available version is **strictly greater** than the installed version.
+An app can legitimately be installed at a version newer than the catalog's currently-advertised version. A naive "installed not equal to available" check would try to reinstall or downgrade it. The script only acts when the available version is **strictly greater** than the installed version.
+</details>
 
 ---
 
@@ -76,7 +108,7 @@ An app can legitimately be installed at a version newer than the catalog's curre
 1. **Azure DevOps** organization and project, with permission to create a pipeline and a variable group.
 2. **Entra ID (Azure AD) app registration** (service principal) with a **client secret**.
 3. **Power Platform Administrator** rights in the tenant, used once to register the service principal as a management application (`New-PowerAppManagementApp`).
-4. **Application user with a security role** (for example System Administrator) for the service principal in **each target environment's Dataverse** - this is what allows reading managed-solution versions and installing apps.
+4. **Application user with a security role** (for example System Administrator) for the service principal in **each target environment's Dataverse**.
 5. A **Windows agent** with **PowerShell 7** (the Microsoft-hosted `windows-latest` image is fine).
 6. For the optional PAC CLI fallback only: a .NET SDK compatible with the CLI (recent versions target .NET 10). The pipeline installs the CLI for you when the fallback is enabled.
 
@@ -85,8 +117,6 @@ Full, step-by-step permission setup is in [docs/permissions.md](docs/permissions
 ---
 
 ## Configuration model: 3 required, everything else optional
-
-This is the important part.
 
 - **Only three variables are required:** `ClientId`, `ClientSecret`, `TenantId`.
 - **Every other setting has a built-in default in the script.**
@@ -101,8 +131,6 @@ This is the important part.
 | `TenantId` | No | Entra ID directory (tenant) id. |
 
 ### Optional variables (add only what you want to override)
-
-All of these have sensible defaults. Add a variable with the exact name to override it.
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -143,16 +171,18 @@ Full walkthrough is in [docs/setup.md](docs/setup.md). In short:
 ## How to run
 
 - **Manual:** run the pipeline and, if you like, flip the `whatIf` / `usePacFallback` dropdowns for that run.
-- **First run:** set `whatIf` to `true` (dropdown or variable) so it reports the full installed-vs-available plan without installing anything.
+- **First run:** set `whatIf` to `true` so it reports the full installed-vs-available plan without installing anything.
 - **Scheduled:** uncomment the `schedules` block in `azure-pipelines.yml` to keep the tenant continuously up to date.
 
 ---
 
 ## Environment and app scoping
 
-- `environmentFilter` - allow-list. Only these environments are processed. Blank = all.
-- `environmentExclude` - deny-list. Always skipped, even if they match the filter. Use it to protect production.
-- `appExclude` - deny-list of apps always skipped (pre-seeded with the F&O Provisioning App, which requires the PPAC Custom Install Experience).
+| Control | Type | Effect |
+|---|---|---|
+| `environmentFilter` | allow-list | Only these environments are processed. Blank = all. |
+| `environmentExclude` | deny-list | Always skipped, even if they match the filter. Use it to protect production. |
+| `appExclude` | deny-list | Apps always skipped (pre-seeded with the F&O Provisioning App). |
 
 Worked examples for all three are in [docs/parameters.md](docs/parameters.md).
 
@@ -181,12 +211,20 @@ Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 MIT. See [LICENSE](LICENSE).
 
+---
+
 ## Author
 
-Laze Janev - Dynamics 365 Solution Architect and Microsoft MVP (AI ERP), founder of Janev Consulting.
+**Laze Janev** - Dynamics 365 Solution Architect and Microsoft MVP (AI ERP), founder of Janev Consulting.
 
-- LinkedIn: https://www.linkedin.com/in/lazejanev/
-- Microsoft MVP profile: https://mvp.microsoft.com/en-US/mvp/profile/5663c435-4e8a-4c28-8d49-7e76a6cfc4c4
-- Speaker profile: https://sessionize.com/laze-janev/
+<p align="left">
+  <a href="https://www.linkedin.com/in/lazejanev/"><img src="https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn" /></a>
+  <a href="https://mvp.microsoft.com/en-US/mvp/profile/5663c435-4e8a-4c28-8d49-7e76a6cfc4c4"><img src="https://img.shields.io/badge/Microsoft%20MVP-Profile-F2C811?style=for-the-badge&logo=microsoft&logoColor=black" alt="MVP profile" /></a>
+  <a href="https://sessionize.com/laze-janev/"><img src="https://img.shields.io/badge/Sessionize-Speaker-1AB394?style=for-the-badge&logo=sessionize&logoColor=white" alt="Sessionize" /></a>
+</p>
 
 If this saved you an afternoon, a star on the repo is appreciated, and I would love to hear how you use it.
+
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1e90ff,100:0b3d91&height=110&section=footer" alt="footer" />
+</p>
