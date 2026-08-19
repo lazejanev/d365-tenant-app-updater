@@ -1,0 +1,94 @@
+# ============================================================================
+# Scheduled GitHub -> Azure DevOps sync
+# ----------------------------------------------------------------------------
+# Pulls the latest commits from the upstream GitHub repository and pushes them
+# into this Azure DevOps repo's `main` branch. GitHub is the source of truth.
+#
+# Prerequisites (one-time):
+#   1. Repo Settings -> Repositories -> your repo -> Security:
+#      Grant "<Project> Build Service (<Org>)" the "Contribute" permission.
+#      For the default RESET strategy also grant "Force push (rewrite history
+#      and delete refs)".
+#   2. If `main` is protected by a branch policy, add the build service as an
+#      exception or the force push will be blocked.
+#   3. System.AccessToken is exposed automatically to the steps below.
+# ============================================================================
+
+# No CI trigger - this pipeline is schedule-driven only.
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 * * * *"          # every hour, on the hour (UTC)
+    displayName: Hourly GitHub sync
+    branches:
+      include:
+        - main
+    always: true               # run even when there are no source changes
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  githubUrl: 'https://github.com/lazejanev/d365-tenant-app-updater.git'
+  targetBranch: 'main'
+  # Sync strategy:
+  #   reset   : mirror. Force-resets Azure DevOps to exactly match GitHub
+  #             (discards any commits made only in Azure DevOps). Use this
+  #             when GitHub is the single source of truth. <-- DEFAULT
+  #   ff-only : safe. Only advances when Azure DevOps has no diverging commits.
+  #             Fails if the two histories have diverged.
+  syncStrategy: 'reset'
+
+steps:
+  # Check out the Azure DevOps repo and keep the OAuth credentials so we can
+  # push back to origin later.
+  - checkout: self
+    persistCredentials: true
+    fetchDepth: 0              # full history is required for merge/reset
+
+  - script: |
+      set -euo pipefail
+
+      echo "Configuring git identity..."
+      git config user.email "build@dev.azure.com"
+      git config user.name  "Azure DevOps Sync"
+
+      echo "Adding GitHub upstream remote..."
+      git remote remove github 2>/dev/null || true
+      git remote add github "$(githubUrl)"
+
+      echo "Fetching from GitHub..."
+      git fetch github "$(targetBranch)" --tags
+
+      echo "Checking out $(targetBranch) (tracking origin)..."
+      # The pipeline checkout leaves us on a detached HEAD, and `main` now
+      # exists on two remotes (origin + github). Be explicit: create a local
+      # branch that tracks origin so the name is never ambiguous.
+      git checkout -B "$(targetBranch)" "origin/$(targetBranch)"
+
+      if [ "$(syncStrategy)" = "reset" ]; then
+        echo "Strategy: reset (mirror GitHub exactly)"
+        git reset --hard "github/$(targetBranch)"
+      else
+        echo "Strategy: ff-only (safe fast-forward)"
+        git merge --ff-only "github/$(targetBranch)"
+      fi
+    displayName: 'Fetch and merge from GitHub'
+
+  - script: |
+      set -euo pipefail
+
+      echo "Pushing to Azure DevOps origin..."
+      if [ "$(syncStrategy)" = "reset" ]; then
+        git push origin "HEAD:$(targetBranch)" --force
+        git push origin --tags --force
+      else
+        git push origin "HEAD:$(targetBranch)"
+        git push origin --tags
+      fi
+
+      echo "Sync complete."
+    displayName: 'Push to Azure DevOps'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
