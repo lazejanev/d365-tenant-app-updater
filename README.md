@@ -1,39 +1,14 @@
-<!-- ===================== HEADER BANNER ===================== -->
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b3d91,100:1e90ff&height=200&section=header&text=d365-tenant-app-updater&fontSize=40&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Update%20every%20Dynamics%20365%20app%20across%20a%20whole%20tenant%2C%20from%20one%20Azure%20DevOps%20pipeline&descAlignY=60&descSize=16" alt="d365-tenant-app-updater" />
-</p>
+# d365-tenant-app-updater
 
-<!-- ===================== STATUS BADGES ===================== -->
-<p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=for-the-badge" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-2.0.0-1e90ff?style=for-the-badge" alt="Version 2.0.0" />
-  <img src="https://img.shields.io/badge/PRs-welcome-0b3d91?style=for-the-badge" alt="PRs welcome" />
-  <img src="https://img.shields.io/badge/status-community%20project-111827?style=for-the-badge" alt="Community project" />
-</p>
+**Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, from a single Azure DevOps pipeline.**
 
-<!-- ===================== TECH BADGES ===================== -->
-<p align="center">
-  <img src="https://img.shields.io/badge/Dynamics%20365%20F%26O-002050?style=flat-square&logo=microsoftdynamics365&logoColor=white" alt="D365 F&O" />
-  <img src="https://img.shields.io/badge/Power%20Platform-742774?style=flat-square&logo=microsoftpowerplatform&logoColor=white" alt="Power Platform" />
-  <img src="https://img.shields.io/badge/Dataverse-0067B8?style=flat-square&logo=microsoft&logoColor=white" alt="Dataverse" />
-  <img src="https://img.shields.io/badge/Azure%20DevOps-0078D7?style=flat-square&logo=azuredevops&logoColor=white" alt="Azure DevOps" />
-  <img src="https://img.shields.io/badge/PowerShell-5391FE?style=flat-square&logo=powershell&logoColor=white" alt="PowerShell" />
-</p>
+![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f) ![Version 2.0.0](https://img.shields.io/badge/version-2.0.0-1e90ff) ![PRs welcome](https://img.shields.io/badge/PRs-welcome-0b3d91) ![Community project](https://img.shields.io/badge/status-community%20project-111827)
 
-<p align="center">
-  <b>Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, from a single Azure DevOps pipeline.</b>
-</p>
+![D365 F&O](https://img.shields.io/badge/Dynamics%20365%20F%26O-002050?logo=microsoftdynamics365&logoColor=white) ![Power Platform](https://img.shields.io/badge/Power%20Platform-742774?logo=microsoftpowerplatform&logoColor=white) ![Dataverse](https://img.shields.io/badge/Dataverse-0067B8?logo=microsoft&logoColor=white) ![Azure DevOps](https://img.shields.io/badge/Azure%20DevOps-0078D7?logo=azuredevops&logoColor=white) ![PowerShell](https://img.shields.io/badge/PowerShell-5391FE?logo=powershell&logoColor=white)
 
-<p align="center">
-  <a href="#the-goal">Goal</a> &bull;
-  <a href="#how-it-works">How it works</a> &bull;
-  <a href="#requirements-mandatory">Requirements</a> &bull;
-  <a href="#configuration-model-3-required-everything-else-optional">Configuration</a> &bull;
-  <a href="#setup">Setup</a> &bull;
-  <a href="docs/parameters.md">Parameters</a>
-</p>
+**Contents:** [Goal](#the-goal) | [How it works](#how-it-works) | [Requirements](#requirements-mandatory) | [Configuration](#configuration-model-3-required-everything-else-optional) | [Setup](#setup) | [Pipelines](#pipelines-in-this-repo) | [Parameters](docs/parameters.md)
 
-> [!NOTE]
+> **Note**
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
 ---
@@ -89,17 +64,9 @@ Azure DevOps pipeline (azure-pipelines.yml)
    Updated tenant
 ```
 
-<details>
-<summary><b>Why installed versions come from Dataverse</b></summary>
+**Why installed versions come from Dataverse.** The Power Platform App Management API tells you which apps exist and what the latest **available** version is, but it is not a reliable source for what is currently **installed**. The trustworthy source of the installed version is the app's **managed solution version** inside each environment's Dataverse. That is why the script reads `solutions` from Dataverse directly, and why the service principal needs an application-user role in each environment.
 
-The Power Platform App Management API tells you which apps exist and what the latest **available** version is, but it is not a reliable source for what is currently **installed**. The trustworthy source of the installed version is the app's **managed solution version** inside each environment's Dataverse. That is why the script reads `solutions` from Dataverse directly, and why the service principal needs an application-user role in each environment.
-</details>
-
-<details>
-<summary><b>Why it never downgrades</b></summary>
-
-An app can legitimately be installed at a version newer than the catalog's currently-advertised version. A naive "installed not equal to available" check would try to reinstall or downgrade it. The script only acts when the available version is **strictly greater** than the installed version.
-</details>
+**Why it never downgrades.** An app can legitimately be installed at a version newer than the catalog's currently-advertised version. A naive "installed not equal to available" check would try to reinstall or downgrade it. The script only acts when the available version is **strictly greater** than the installed version.
 
 ---
 
@@ -176,6 +143,37 @@ Full walkthrough is in [docs/setup.md](docs/setup.md). In short:
 
 ---
 
+## Pipelines in this repo
+
+This repository ships two independent pipelines.
+
+### 1. `azure-pipelines.yml` - the tenant app updater
+
+The main pipeline described above. It runs `scripts/Update-TenantApps.ps1` to update Dynamics 365 first-party apps across every Dataverse environment on the tenant.
+
+### 2. `sync-from-github.yml` - GitHub to Azure DevOps sync
+
+A helper pipeline that keeps an Azure DevOps mirror of this repository in step with GitHub. GitHub stays the single source of truth; the pipeline pulls the latest commits from the upstream GitHub repo and pushes them into the Azure DevOps repo on a schedule (hourly by default).
+
+Why it exists: many teams run their build and release pipelines from Azure DevOps Repos, but prefer to author and version the code on GitHub. This pipeline removes the manual copy step so the Azure DevOps copy is never stale.
+
+How it works:
+- Runs on a schedule only (no CI trigger). Default cron is hourly, `always: true` so it runs even with no new commits.
+- Adds the GitHub repo as an upstream remote and fetches `main` plus tags.
+- Applies a **sync strategy**:
+  - `reset` (default) - mirror. Force-resets the Azure DevOps branch to exactly match GitHub, discarding any commits made only in Azure DevOps. Use when GitHub is the single source of truth.
+  - `ff-only` - safe. Only advances when the Azure DevOps branch has not diverged; fails if the histories have diverged.
+- Pushes the result to the Azure DevOps `origin` using `System.AccessToken`.
+
+One-time setup (in Azure DevOps):
+1. **Project Settings > Repositories > (your repo) > Security:** grant the build service (`<Project> Build Service (<Org>)`) the **Contribute** permission. For the default `reset` strategy also grant **Force push (rewrite history and delete refs)**.
+2. If `main` is protected by a branch policy, add the build service as a policy exception, or the force push is blocked.
+3. `System.AccessToken` is exposed to the pipeline automatically.
+
+Configuration is at the top of the file: `githubUrl`, `targetBranch`, and `syncStrategy`.
+
+---
+
 ## Environment and app scoping
 
 | Control | Type | Effect |
@@ -217,14 +215,8 @@ MIT. See [LICENSE](LICENSE).
 
 **Laze Janev** - Dynamics 365 Solution Architect and Microsoft MVP (AI ERP), founder of Janev Consulting.
 
-<p align="left">
-  <a href="https://www.linkedin.com/in/lazejanev/"><img src="https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn" /></a>
-  <a href="https://mvp.microsoft.com/en-US/mvp/profile/5663c435-4e8a-4c28-8d49-7e76a6cfc4c4"><img src="https://img.shields.io/badge/Microsoft%20MVP-Profile-F2C811?style=for-the-badge&logo=microsoft&logoColor=black" alt="MVP profile" /></a>
-  <a href="https://sessionize.com/laze-janev/"><img src="https://img.shields.io/badge/Sessionize-Speaker-1AB394?style=for-the-badge&logo=sessionize&logoColor=white" alt="Sessionize" /></a>
-</p>
+- LinkedIn: https://www.linkedin.com/in/lazejanev/
+- Microsoft MVP profile: https://mvp.microsoft.com/en-US/mvp/profile/5663c435-4e8a-4c28-8d49-7e76a6cfc4c4
+- Speaker profile: https://sessionize.com/laze-janev/
 
 If this saved you an afternoon, a star on the repo is appreciated, and I would love to hear how you use it.
-
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1e90ff,100:0b3d91&height=110&section=footer" alt="footer" />
-</p>
