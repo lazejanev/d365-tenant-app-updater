@@ -19,8 +19,8 @@ trigger: none
 pr: none
 
 schedules:
-  - cron: "0 * * * *"          # every hour, on the hour (UTC)
-    displayName: Hourly GitHub sync
+  - cron: "0 6 * * 1"          # every hour, on the hour (UTC)
+    displayName: Weekly GitHub sync
     branches:
       include:
         - main
