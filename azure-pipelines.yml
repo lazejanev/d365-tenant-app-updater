@@ -1,48 +1,51 @@
 # =====================================================================
 # d365-tenant-app-updater
-# Automatically update all Dynamics 365 first-party (Dataverse) apps
-# across a tenant.
+# Update all Dynamics 365 first-party (Dataverse) apps across a tenant,
+# and optionally apply Finance and Operations application versions where
+# a PPAC-managed F&O environment exists.
 #
-# This pipeline calls scripts/Update-TenantApps.ps1, which authenticates
-# as a service principal and updates apps on every Dataverse environment.
+# HOW THE TWO PHASES WORK
+#   Phase 1 always runs against every environment that passes
+#   environmentFilter / environmentExclude. While it inspects each
+#   environment it also records which ones have Finance and Operations
+#   solutions installed. No extra probing.
+#
+#   Phase 2 is opt-in (updateFinOpsVersion = true). It calls the Power
+#   Platform REST API directly for each candidate. An HTTP 404 means the
+#   environment has F&O solutions in Dataverse but is not a Finance and
+#   Operations (ERP) environment managed by Power Platform admin center,
+#   so it is skipped quietly.
 #
 # CONFIGURATION MODEL
-#   Only three variables are REQUIRED in the 'D365-TenantAppUpdater'
-#   variable group: ClientId, ClientSecret (secret), TenantId.
+#   Required variables in 'D365-TenantAppUpdater':
+#       ClientId, ClientSecret (secret), TenantId
+#   Everything else has a built-in default in the script. To override any
+#   setting, add a variable with the matching name to the group.
 #
-#   Every other setting has a built-in default in the script. To override
-#   any of them, simply add a variable with the matching name to the group
-#   (see the env: block below for the exact names). If a variable is not
-#   defined, the script uses its default. No YAML edits required.
-#
-#   Optional override variables (all have script defaults):
+#   Optional override variables:
 #     authority, bapApiRoot, bapApiVersion, powerPlatformScope, ppApiRoot,
-#     appManagementApiVersion, pollIntervalSec, pollTimeoutMin,
-#     dumpDiagnostics, retryFailedInstalls, whatIf, usePacFallback,
-#     environmentFilter, environmentExclude, appExclude
+#     appManagementApiVersion, finOpsApiVersion, pollIntervalSec,
+#     pollTimeoutMin, dumpDiagnostics, retryFailedInstalls, whatIf,
+#     usePacFallback, environmentFilter, environmentExclude, appExclude,
+#     updateFinOpsVersion, finOpsTargetVersion, finOpsEnvironmentFilter,
+#     finOpsDeploymentTypes
 #
-#   The values are passed through the env: block (not as arguments) so that
-#   an undefined variable stays a harmless literal that the script ignores.
+#   Values are passed through env: so an undefined variable stays a
+#   harmless literal that the script ignores in favour of its default.
 #
-# Before you run:
-#   1. Register the service principal as a Power Platform management app,
-#      and add it as an application user (System Administrator) in each
-#      target environment's Dataverse. See docs/permissions.md.
-#   2. Create the variable group with ClientId, ClientSecret, TenantId
-#      (plus any optional overrides you want). Authorize this pipeline.
-#   3. Run.
+# NOTE ON THE POWER PLATFORM CLI
+#   The CLI is only needed for the optional app-install fallback
+#   (usePacFallback). The F&O phase uses REST and does not need it.
 # =====================================================================
 
 name: 'd365-tenant-app-updater-$(Date:yyyyMMdd)$(Rev:.r)'
 
 # ---------------------------------------------------------------------
-# Runtime parameters (chosen at queue time). These override the library
-# values for a single manual run. Leave "use library / default" to defer
-# to the variable group value or the script default.
+# Runtime parameters (chosen at queue time)
 # ---------------------------------------------------------------------
 parameters:
   - name: whatIf
-    displayName: 'Plan only (do not install)'
+    displayName: 'Plan only (do not install or apply)'
     type: string
     default: useLibraryOrDefault
     values:
@@ -58,6 +61,20 @@ parameters:
       - useLibraryOrDefault
       - 'true'
       - 'false'
+
+  - name: updateFinOpsVersion
+    displayName: 'Also update F&O version (where an F&O ERP environment exists)'
+    type: string
+    default: useLibraryOrDefault
+    values:
+      - useLibraryOrDefault
+      - 'true'
+      - 'false'
+
+  - name: finOpsTargetVersion
+    displayName: 'F&O target version (blank = latest available)'
+    type: string
+    default: ' '
 
 # ---------------------------------------------------------------------
 # Triggers (manual/scheduled). Uncomment the schedule to run nightly.
@@ -78,13 +95,14 @@ pool:
 
 variables:
   - group: D365-TenantAppUpdater
-  # Runtime-parameter overrides. When a parameter is left at the sentinel,
-  # this resolves to blank so the script falls back to the library value or
-  # its own default.
+  # Queue-time overrides. The sentinel resolves to blank so the script falls
+  # back to the library value, then to its own default.
   - name: whatIfOverride
     value: ${{ replace(parameters.whatIf, 'useLibraryOrDefault', '') }}
   - name: usePacOverride
     value: ${{ replace(parameters.usePacFallback, 'useLibraryOrDefault', '') }}
+  - name: finOpsOverride
+    value: ${{ replace(parameters.updateFinOpsVersion, 'useLibraryOrDefault', '') }}
 
 stages:
   - stage: UpdateApps
@@ -96,8 +114,7 @@ stages:
         steps:
           - checkout: self
 
-          # Install the Power Platform CLI only when the PAC fallback is on
-          # (either via the runtime parameter or the library variable).
+          # Only required for the optional app-install fallback.
           - powershell: |
               $ErrorActionPreference = 'Stop'
               Write-Host 'Installing Power Platform CLI (latest)'
@@ -110,21 +127,16 @@ stages:
                      eq(variables['usePacFallback'], 'true')))
 
           - task: PowerShell@2
-            displayName: 'Update applications that have an update available'
+            displayName: 'Update applications (and F&O version where applicable)'
             inputs:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
               pwsh: true
               failOnStderr: false
-              # Required credentials as arguments (always defined -> safe to expand).
               arguments: >
                 -ClientId "$(ClientId)"
                 -ClientSecret "$(ClientSecret)"
                 -TenantId "$(TenantId)"
-            # Every optional setting flows through env. An undefined variable
-            # arrives as the literal "$(name)" and the script ignores it,
-            # falling back to its built-in default. A runtime parameter, when
-            # chosen, wins over the library value.
             env:
               Authority:               $(authority)
               BapApiRoot:              $(bapApiRoot)
@@ -132,6 +144,7 @@ stages:
               PowerPlatformScope:      $(powerPlatformScope)
               PpApiRoot:               $(ppApiRoot)
               AppManagementApiVersion: $(appManagementApiVersion)
+              FinOpsApiVersion:        $(finOpsApiVersion)
               PollIntervalSec:         $(pollIntervalSec)
               PollTimeoutMin:          $(pollTimeoutMin)
               DumpDiagnostics:         $(dumpDiagnostics)
@@ -139,6 +152,15 @@ stages:
               EnvironmentFilter:       $(environmentFilter)
               EnvironmentExclude:      $(environmentExclude)
               AppExclude:              $(appExclude)
-              # Runtime-parameter overrides win when set; otherwise blank -> library/default.
-              WhatIf:                  $(whatIfOverride)
-              UsePacFallback:          $(usePacOverride)
+              FinOpsEnvironmentFilter: $(finOpsEnvironmentFilter)
+              FinOpsDeploymentTypes:   $(finOpsDeploymentTypes)
+              # Both the library value and the queue-time override are passed.
+              # The script prefers override, then library, then its default.
+              WhatIf:                      $(whatIf)
+              WhatIfOverride:              $(whatIfOverride)
+              UsePacFallback:              $(usePacFallback)
+              UsePacFallbackOverride:      $(usePacOverride)
+              UpdateFinOpsVersion:         $(updateFinOpsVersion)
+              UpdateFinOpsVersionOverride: $(finOpsOverride)
+              FinOpsTargetVersion:         $(finOpsTargetVersion)
+              FinOpsTargetVersionOverride: ${{ parameters.finOpsTargetVersion }}
