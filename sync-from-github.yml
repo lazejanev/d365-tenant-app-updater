@@ -19,7 +19,7 @@ trigger: none
 pr: none
 
 schedules:
-  - cron: "0 6 * * 1"          # every hour, on the hour (UTC)
+  - cron: "0 6 * * 1"          # weekly, Mondays at 06:00 UTC
     displayName: Weekly GitHub sync
     branches:
       include:
@@ -49,7 +49,6 @@ steps:
 
   - script: |
       set -euo pipefail
-
       echo "Configuring git identity..."
       git config user.email "build@dev.azure.com"
       git config user.name  "Azure DevOps Sync"
@@ -78,7 +77,6 @@ steps:
 
   - script: |
       set -euo pipefail
-
       echo "Pushing to Azure DevOps origin..."
       if [ "$(syncStrategy)" = "reset" ]; then
         git push origin "HEAD:$(targetBranch)" --force
@@ -87,7 +85,6 @@ steps:
         git push origin "HEAD:$(targetBranch)"
         git push origin --tags
       fi
-
       echo "Sync complete."
     displayName: 'Push to Azure DevOps'
     env:
