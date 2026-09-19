@@ -35,8 +35,6 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 | `powerPlatformScope` | `https://api.powerplatform.com/.default` | Token scope for the Power Platform API. |
 | `appManagementApiVersion` | `2026-05-01-preview` | API version for App Management calls. |
 | `finOpsApiVersion` | `2024-10-01` | API version for the Finance and Operations routes. |
-| `pollIntervalSec` | `20` | Seconds between install completion polls. |
-| `pollTimeoutMin` | `60` | Maximum minutes to wait for an install. |
 
 ### Behavior
 
@@ -45,19 +43,31 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 | `dumpDiagnostics` | `true` | Print installed-vs-available diagnostics per environment. |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install ended in `InstallFailed`. |
 | `whatIf` | `false` | Plan only. Report what would change without changing anything. |
-| `usePacFallback` | `false` | Attempt `pac application install` for custom-install apps. |
+| `usePacFallback` | `false` | Attempt a PAC CLI install for custom-install apps. |
 | `environmentFilter` | (blank = all) | Allow-list of environment names/ids to process. |
 | `environmentExclude` | (blank = none) | Deny-list of environment names/ids to always skip. |
 | `appExclude` | (blank) | Deny-list of app names/ids to always skip. |
 
 ### Finance and Operations
 
+Inventory always runs and is read-only. It costs one GET per detected F&O environment and changes nothing, so there is no switch for it. The **only** Finance and Operations variable that changes behaviour is `finOpsApplyVersion`.
+
 | Variable | Default | Description |
 |---|---|---|
-| `updateFinOpsVersion` | `false` | Master switch for the Finance and Operations phase. When false, F&O environments are still detected and counted but not inspected. |
-| `finOpsTargetVersion` | (blank = latest) | A specific F&O application version to apply, for example `10.0.47.5`. Blank selects the highest available version per environment. |
+| `finOpsApplyVersion` | `false` | **The only switch.** Set to `true` to apply a new F&O application version on eligible environments. Everything else in this table only refines what/where an apply targets; none of them enable an apply on their own. |
+| `finOpsTargetVersion` | (blank = latest) | A specific F&O application version to apply, for example `10.0.47.5`. Blank selects the highest available version per environment. Only used when `finOpsApplyVersion` is `true`. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list applied to the F&O phase only, on top of `environmentFilter` and `environmentExclude`. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a **version apply**. Inventory is always collected regardless. LCS types are excluded by default. |
+
+#### Why apply is a single, off-by-default switch
+
+Version discovery and apply are implemented against the documented Power Platform API and are gated behind a live route check, so they begin working automatically once the route is available on your endpoint.
+
+That is exactly why `finOpsApplyVersion` must be a single, explicit, off-by-default switch, with no other variable able to turn it on. If inventory and apply shared a switch, or if a legacy variable could enable apply as a side effect, then the day the route deploys, anyone whose configuration merely enabled the F&O phase for the inventory table would start applying application versions on their next scheduled run without having asked for it. With one variable and one meaning, that cannot happen: apply only ever runs when `finOpsApplyVersion = true` is set explicitly, in the variable group or as a queue-time parameter.
+
+#### Retired variables
+
+Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional, so a switch for it made no sense) and `updateFinOpsVersion` (an earlier combined switch). If either is still present in the variable group, the script ignores it and prints a one-time warning naming exactly which one it found. Remove them; nothing needs to replace them, since inventory always runs and `finOpsApplyVersion` is the only apply trigger.
 
 ## Runtime parameters
 
@@ -67,7 +77,7 @@ Four settings are also exposed as queue-time inputs, so you can override them fo
 |---|---|---|
 | Plan only (`whatIf`) | `useLibraryOrDefault`, `true`, `false` | Overrides the library/default for this run. The sentinel defers to the variable group value or the script default. |
 | Try PAC CLI fallback (`usePacFallback`) | `useLibraryOrDefault`, `true`, `false` | Same override behavior. When effectively true, the pipeline installs the PAC CLI on the agent. |
-| Also update F&O version (`updateFinOpsVersion`) | `useLibraryOrDefault`, `true`, `false` | Enables or disables the Finance and Operations phase for this run. |
+| Apply F&O version (`finOpsApplyVersion`) | `useLibraryOrDefault`, `true`, `false` | **Changes environments.** Enables version apply for this run only. |
 | F&O target version (`finOpsTargetVersion`) | free text | A specific version for this run. Blank defers to the library value or latest available. |
 
 ## Environment scoping: how filter and exclude work
@@ -94,7 +104,7 @@ The exclude list always wins.
 
 ### Worked examples
 
-| Goal | environmentFilter | environmentExclude | Result |
+| Goal | `environmentFilter` | `environmentExclude` | Result |
 |---|---|---|---|
 | Update everything | (blank) | (blank) | Every Dataverse environment. |
 | Update everything except production | (blank) | `Production` | All, but Production is skipped. |
@@ -107,21 +117,24 @@ The exclude list always wins.
 
 Comma-separated application **names, uniqueNames, or ids** that are always skipped on every environment.
 
-Matching supports three forms:
+Matching is tried in this order:
 
-- **Exact** - `msdyn_AppProfileManagerAnchor`
-- **Wildcard** - `msdyn_*Anchor`
-- **Substring** - `FinanceAndOperations` matches any app whose name contains it
+1. **Exact** - `msdyn_AppProfileManagerAnchor` matches only that app.
+2. **Wildcard** - `msdyn_*Anchor` matches anything fitting the pattern. Use this when you want control.
+3. **Substring** - any app whose name *contains* the value is matched.
+
+> **Substring matching is deliberately loose, and it is the fallback whenever the value contains no `*`.**
+> A long, specific value like `FinanceAndOperationsProvisioning` is safe. A short generic value is not: `sales` would exclude every app with "sales" anywhere in its unique name, localized name, application name or id, which is likely far more than you intended. When in doubt, use the exact unique name, or an explicit wildcard so the intent is visible.
 
 The default is blank. Apps that require the Power Platform Admin Center install wizard are reported under **manual install required** rather than hidden, so you can see what still needs a human. Add them to `appExclude` if you would rather silence them.
 
 ## Finance and Operations scoping
 
-Two additional controls apply only to the F&O phase.
+Two additional controls apply only to the F&O apply phase. Inventory always ignores these and covers every detected F&O environment.
 
 ### `finOpsEnvironmentFilter`
 
-An extra allow-list layered on top of the normal environment scoping. Useful when you want app updates everywhere but F&O handling on a subset.
+An extra allow-list layered on top of the normal environment scoping, applying to apply eligibility only. Useful when you want app updates everywhere but F&O version apply restricted to a subset.
 
 ### `finOpsDeploymentTypes`
 
@@ -141,14 +154,20 @@ LCS managed environments are excluded deliberately. Their application updates ar
 
 Variable group:
 
-- `whatIf` = `true`
-- `environmentExclude` = `Production`
+- `whatIf = true`
+- `environmentExclude = Production`
 
-Everything else omitted. This reports what would change across every environment except Production, without changing anything.
+Everything else omitted. This reports what would change across every environment except Production, without changing anything. F&O inventory is included, because it always runs and is read-only.
 
-## Example: apps everywhere, F&O inventory only on the dev estate
+## Example: inventory everywhere, no version changes
 
-- `updateFinOpsVersion` = `true`
-- `finOpsEnvironmentFilter` = `TPM-DEV01, TPM-DEV02, TPM-DEV03`
+Nothing to configure. This is the default. `finOpsApplyVersion` is `false`, so you get the inventory table and no environment is modified.
 
-Phase 1 still runs against every environment. Phase 2 inspects only the three listed.
+## Example: apply versions on the dev estate only
+
+- `finOpsApplyVersion = true`
+- `finOpsEnvironmentFilter = TPM-DEV01, TPM-DEV02, TPM-DEV03`
+
+Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only if their deployment type is in `finOpsDeploymentTypes`.
+
+Run this with `whatIf = true` first.
