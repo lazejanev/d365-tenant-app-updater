@@ -1,20 +1,40 @@
 # =====================================================================
 # d365-tenant-app-updater
 # Update all Dynamics 365 first-party (Dataverse) apps across a tenant,
-# and optionally apply Finance and Operations application versions where
-# a PPAC-managed F&O environment exists.
+# report Finance and Operations inventory, and optionally apply F&O
+# application versions on eligible environments.
 #
 # HOW THE TWO PHASES WORK
 #   Phase 1 always runs against every environment that passes
 #   environmentFilter / environmentExclude. While it inspects each
 #   environment it also records which ones have Finance and Operations
-#   solutions installed. No extra probing.
+#   installed. No extra probing.
 #
-#   Phase 2 is opt-in (updateFinOpsVersion = true). It calls the Power
-#   Platform REST API directly for each candidate. An HTTP 404 means the
-#   environment has F&O solutions in Dataverse but is not a Finance and
-#   Operations (ERP) environment managed by Power Platform admin center,
-#   so it is skipped quietly.
+#   Phase 2 - Finance and Operations:
+#     INVENTORY     always runs, read-only, no switch. Reports application
+#                   version, platform version, deployment type and AOS
+#                   counts per F&O environment, then prints a consolidated
+#                   table. It costs one GET per F&O environment and changes
+#                   nothing, so it is not worth gating.
+#     VERSION APPLY controlled by finOpsApplyVersion, default false. This
+#                   is the ONLY switch in the F&O phase and the only way a
+#                   version is ever applied. It changes the environment.
+#
+#   Version apply is gated behind a live route check, so it begins working
+#   automatically once the finopsversions route is available. That is
+#   precisely why it must be set explicitly: no default, no other variable
+#   and no platform change can turn it on.
+#
+# WHAT THE F&O ROUTES RETURN TODAY
+#   Verified on a westeurope tenant with an app-only token, reproduced
+#   independently via both raw REST calls and the `pac dynamics` CLI:
+#     GET  /dynamics/environments/{id}/finopsproperties           -> HTTP 200
+#     GET  /dynamics/environments/{id}/finopsversions              -> HTTP 404 RouteNotFound
+#     POST /dynamics/environments/{id}/finopsversions/{v}/apply   -> HTTP 404 RouteNotFound
+#   The sibling route succeeds on the identical call shape, so the token,
+#   the environment id and the api-version are accepted. The script reports
+#   whatever the API returns and does not assert a cause. A RouteNotFound on
+#   finopsversions is not counted as a failure.
 #
 # CONFIGURATION MODEL
 #   Required variables in 'D365-TenantAppUpdater':
@@ -24,14 +44,22 @@
 #
 #   Optional override variables:
 #     authority, bapApiRoot, bapApiVersion, powerPlatformScope, ppApiRoot,
-#     appManagementApiVersion, finOpsApiVersion, pollIntervalSec,
-#     pollTimeoutMin, dumpDiagnostics, retryFailedInstalls, whatIf,
-#     usePacFallback, environmentFilter, environmentExclude, appExclude,
-#     updateFinOpsVersion, finOpsTargetVersion, finOpsEnvironmentFilter,
-#     finOpsDeploymentTypes
+#     appManagementApiVersion, finOpsApiVersion, dumpDiagnostics,
+#     retryFailedInstalls, whatIf, usePacFallback, environmentFilter,
+#     environmentExclude, appExclude, finOpsApplyVersion,
+#     finOpsTargetVersion, finOpsEnvironmentFilter, finOpsDeploymentTypes
+#
+#   Retired: updateFinOpsVersion and finOpsInventory. Both are ignored. If
+#   either is still in the variable group the script says so once in the
+#   log. Remove them.
 #
 #   Values are passed through env: so an undefined variable stays a
 #   harmless literal that the script ignores in favour of its default.
+#
+# NOTE ON POWERSHELL
+#   The task runs with pwsh: true. The Finance and Operations phase needs
+#   PowerShell 7. On Windows PowerShell 5.1 it is skipped with a clear
+#   message; Phase 1 still runs.
 #
 # NOTE ON THE POWER PLATFORM CLI
 #   The CLI is only needed for the optional app-install fallback
@@ -62,8 +90,8 @@ parameters:
       - 'true'
       - 'false'
 
-  - name: updateFinOpsVersion
-    displayName: 'Also update F&O version (where an F&O ERP environment exists)'
+  - name: finOpsApplyVersion
+    displayName: 'Apply F&O version (CHANGES environments)'
     type: string
     default: useLibraryOrDefault
     values:
@@ -95,14 +123,15 @@ pool:
 
 variables:
   - group: D365-TenantAppUpdater
+
   # Queue-time overrides. The sentinel resolves to blank so the script falls
   # back to the library value, then to its own default.
   - name: whatIfOverride
     value: ${{ replace(parameters.whatIf, 'useLibraryOrDefault', '') }}
   - name: usePacOverride
     value: ${{ replace(parameters.usePacFallback, 'useLibraryOrDefault', '') }}
-  - name: finOpsOverride
-    value: ${{ replace(parameters.updateFinOpsVersion, 'useLibraryOrDefault', '') }}
+  - name: finOpsApplyOverride
+    value: ${{ replace(parameters.finOpsApplyVersion, 'useLibraryOrDefault', '') }}
 
 stages:
   - stage: UpdateApps
@@ -127,7 +156,7 @@ stages:
                      eq(variables['usePacFallback'], 'true')))
 
           - task: PowerShell@2
-            displayName: 'Update applications (and F&O version where applicable)'
+            displayName: 'Update applications (and F&O version where enabled)'
             inputs:
               targetType: 'filePath'
               filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
@@ -145,8 +174,6 @@ stages:
               PpApiRoot:               $(ppApiRoot)
               AppManagementApiVersion: $(appManagementApiVersion)
               FinOpsApiVersion:        $(finOpsApiVersion)
-              PollIntervalSec:         $(pollIntervalSec)
-              PollTimeoutMin:          $(pollTimeoutMin)
               DumpDiagnostics:         $(dumpDiagnostics)
               RetryFailedInstalls:     $(retryFailedInstalls)
               EnvironmentFilter:       $(environmentFilter)
@@ -160,7 +187,12 @@ stages:
               WhatIfOverride:              $(whatIfOverride)
               UsePacFallback:              $(usePacFallback)
               UsePacFallbackOverride:      $(usePacOverride)
-              UpdateFinOpsVersion:         $(updateFinOpsVersion)
-              UpdateFinOpsVersionOverride: $(finOpsOverride)
+              # The single Finance and Operations switch. Default false.
+              FinOpsApplyVersion:          $(finOpsApplyVersion)
+              FinOpsApplyVersionOverride:  $(finOpsApplyOverride)
               FinOpsTargetVersion:         $(finOpsTargetVersion)
               FinOpsTargetVersionOverride: ${{ parameters.finOpsTargetVersion }}
+              # Retired. Passed only so the script can warn if they are still
+              # present in the variable group. They have no effect.
+              UpdateFinOpsVersion:         $(updateFinOpsVersion)
+              FinOpsInventory:             $(finOpsInventory)
