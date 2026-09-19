@@ -1,44 +1,74 @@
 # Release Notes
 
-## v2.0.0 - 2026-08-18
+## v2.2.0 - 2026-09-19
 
-A major simplification of how the pipeline is configured. The behavior is the same proven app-update logic; what changed is that you now configure almost nothing.
+Adds Finance and Operations environment inventory, and implements F&O application version updates.
 
 ### Highlights
 
-- **Only three variables are required:** `ClientId`, `ClientSecret`, `TenantId`.
-- **Everything else is optional** with a sensible built-in default. To override any setting, just add a variable with the matching name to the `D365-TenantAppUpdater` group. If it is absent, the default is used. No YAML editing required to tune behavior.
-- **Safer override plumbing:** optional values flow through the pipeline `env:` block, so an undefined variable never crashes the run (it stays a harmless literal that the script ignores in favor of the default).
-- **Fewer moving parts:** removed `pipelineName`, `agentVmImage`, `jobTimeoutMinutes`, and the endpoint/API variables from the required set. Run name and agent image are fixed in the YAML; API endpoints/versions are script defaults you can still override.
-- **Queue-time toggles:** `whatIf` (Plan only) and `usePacFallback` are exposed as runtime dropdowns for one-off runs, in addition to being overridable variables.
-- **Defaults refreshed:** `bapApiVersion` default is now `2026-06-01`; App Management uses `2026-05-01-preview`.
+- **F&O inventory, tenant wide.** For every environment where Finance and Operations is installed, the run reports application version, platform version, deployment type, AOS counts, demo dataset and scheduled actions, then prints a consolidated table. Version drift across a dev estate becomes obvious at a glance.
+- **Version update implemented.** Discovery and apply are built against the documented Power Platform routes and are gated behind a live route check.
+- **LCS environments are inventoried, never version-updated.** `LCSSandbox` and `LCSProduction` are excluded from version apply by design, because Lifecycle Services drives their updates. Controlled by the new `finOpsDeploymentTypes` variable.
+- **No CLI dependency for F&O.** The phase calls the REST API directly. The Power Platform CLI is installed only when the optional app-install fallback is enabled.
+- **Better error classification.** Apps that require the Power Platform Admin Center wizard are now correctly reported as manual install required instead of being counted as failures.
+
+### New variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `updateFinOpsVersion` | `false` | Master switch for the F&O phase. |
+| `finOpsTargetVersion` | blank | Specific version to apply. Blank selects the latest available. |
+| `finOpsEnvironmentFilter` | blank | Extra allow-list for the F&O phase only. |
+| `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a version apply. |
+| `finOpsApiVersion` | `2024-10-01` | API version for the F&O routes. |
+
+### Known limitation: the version routes
+
+Version discovery uses the documented route:
+
+```text
+GET {ppApiRoot}/dynamics/environments/{environmentId}/finopsversions?api-version=2024-10-01
+```
+
+At the time of writing, on a tenant in West Europe using an app-only token, `finopsproperties` returns HTTP 200 with full data while `finopsversions` returns HTTP 404 `RouteNotFound`. Because the sibling route succeeds on the identical call shape, the token, the environment id and the api-version are all accepted; the versions leaf simply does not resolve on that endpoint. This was observed consistently across 11 environments spanning two deployment types.
+
+Practical effect:
+
+- Inventory works today and is the useful capability in this release.
+- Version apply does not run while the route returns `RouteNotFound`. It is reported factually per environment and is not counted as a failure.
+- No code change will be needed. When the route becomes available on your endpoint, the next run uses it automatically.
 
 ### Upgrade notes
 
-- You can safely delete every variable from your group except `ClientId`, `ClientSecret`, `TenantId` - and any you specifically want to override (for example `environmentExclude`, `appExclude`).
-- Commit both `azure-pipelines.yml` and `scripts/Update-TenantApps.ps1` together; the two are matched to this model.
+- The F&O phase is **off by default**. Add `updateFinOpsVersion` = `true` to enable it.
+- `appExclude` now defaults to empty. If you previously relied on the built-in default to hide the F&O Provisioning App, set the variable explicitly.
+- Run with `whatIf` = `true` first.
+
+---
+
+## v2.0.0 - 2026-08-18
+
+A major simplification of how the pipeline is configured.
+
+- Only three variables are required: `ClientId`, `ClientSecret`, `TenantId`.
+- Everything else is optional with a sensible built-in default, overridable by adding a variable with the matching name.
+- Optional values flow through the pipeline `env:` block, so an undefined variable never crashes the run.
+- Removed `pipelineName`, `agentVmImage` and `jobTimeoutMinutes` from the variable set.
 
 ---
 
 ## v1.4.0 - 2026-08-18
 
-- Wired the real app-update logic: available versions from the Power Platform App Management API, installed versions from Dataverse managed solutions, strict "never downgrade" comparison, install with operation id, and failed-install retry.
-- Added App Management endpoint configuration.
-
-## v1.3.0 - 2026-08-18
-
-- Conditional Power Platform CLI install step for the PAC fallback, plus .NET 10 guidance.
+Wired the real app-update logic: available versions from the App Management API, installed versions from Dataverse managed solutions, strict never-downgrade comparison, install with operation id, and failed-install retry.
 
 ## v1.2.0 - 2026-08-18
 
-- `AppExclude` deny-list (pre-seeded with the F&O Provisioning App).
-- Smart Custom Install Experience detection: such apps are reported as `manual-required` instead of failing.
-- Optional PAC CLI fallback (off by default).
+`AppExclude` deny-list, Custom Install Experience detection, and the optional PAC CLI fallback.
 
 ## v1.1.0 - 2026-08-18
 
-- `EnvironmentExclude` deny-list, and `RetryFailedInstalls` on by default.
+`EnvironmentExclude` deny-list, and `RetryFailedInstalls` on by default.
 
 ## v1.0.0 - 2026-08-16
 
-- Initial public release.
+Initial public release.
