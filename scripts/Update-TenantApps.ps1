@@ -1,44 +1,45 @@
 <#
 .SYNOPSIS
     Updates all Dynamics 365 first-party (Dataverse) apps across every
-    environment on a tenant.
+    environment on a tenant, reports Finance and Operations inventory, and
+    applies F&O application versions on eligible environments.
 
 .DESCRIPTION
-    Authenticates as a service principal using the client credentials flow,
-    discovers every environment on the tenant through the BAP admin API,
-    reads each environment's available application packages from the Power
-    Platform App Management API, reads the installed versions from Dataverse
-    managed solutions, and installs updates where a strictly newer version
-    exists. Optionally retries previously failed installs, and can skip apps
-    that require the PPAC Custom Install Experience.
+    Phase 1 (always runs)
+      Discovers every Dataverse environment, reads available application
+      packages, reads installed versions from Dataverse managed solutions,
+      and installs updates where a strictly newer version exists.
 
-    CONFIGURATION MODEL
-      Only three inputs are required: ClientId, ClientSecret, TenantId.
-      Everything else has a sensible built-in default. Any default can be
-      overridden WITHOUT editing this script - just add a variable with the
-      matching name to the 'D365-TenantAppUpdater' variable group and the
-      pipeline passes it in. If the variable is absent, the default is used.
-
-      Overridable settings and their defaults:
-        authority                -> https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
-        bapApiRoot               -> https://api.bap.microsoft.com
-        bapApiVersion            -> 2026-06-01
-        powerPlatformScope       -> https://api.powerplatform.com/.default
-        ppApiRoot                -> https://api.powerplatform.com
-        appManagementApiVersion  -> 2026-05-01-preview
-        pollIntervalSec          -> 20
-        pollTimeoutMin           -> 60
-        dumpDiagnostics          -> true
-        retryFailedInstalls      -> true
-        whatIf                   -> false
-        usePacFallback           -> false
-        environmentFilter        -> (blank = all)
-        environmentExclude       -> (blank = none)
-        appExclude               -> msdyn_FinanceAndOperationsProvisioningApp
-
-    Community project. Not an official Microsoft tool. Test in non-production first.
+    Phase 2 (opt-in, UpdateFinOpsVersion)
+      a. INVENTORY - runs for EVERY environment where F&O is installed.
+         Reports application version, platform version, deployment type,
+         AOS counts, demo dataset and scheduled actions.
+      b. VERSION UPDATE - only for eligible deployment types. LCS managed
+         environments (LCSSandbox, LCSProduction) are deliberately excluded
+         because their application updates are driven through Lifecycle
+         Services, not the Power Platform API.
 
 .NOTES
+    v2.2.0
+      - Every environment is probed individually. An earlier build stopped
+        after the first RouteNotFound and assumed the rest would behave the
+        same, which hid per deployment type differences. A 404 over REST
+        costs about 25 ms, so probing all of them is effectively free.
+      - Reporting is factual. The script states what the API returned
+        (for example RouteNotFound) rather than asserting a cause such as
+        regional rollout.
+      - New variable FinOpsDeploymentTypes controls which deployment types
+        are eligible for a version apply. Default excludes LCS managed
+        environments. Inventory is still collected for them.
+
+    Verified 2026-09-19 (westeurope, app-only token):
+      GET /dynamics/environments/{id}/finopsproperties -> HTTP 200
+      GET /dynamics/environments/{id}/finopsversions   -> HTTP 404 RouteNotFound
+    So auth, environment id and api-version are correct.
+
+    PowerShell variable names are case-insensitive, so every local here is
+    prefixed (opt*, cfg*) and can never collide with a parameter name.
+
     Author : Laze Janev
     License: MIT
     Repo   : https://github.com/lazejanev/d365-tenant-app-updater
@@ -46,45 +47,47 @@
 
 [CmdletBinding()]
 param(
-    # --- Required: credentials ---
     [Parameter(Mandatory = $true)] [string] $ClientId,
     [Parameter(Mandatory = $true)] [string] $ClientSecret,
     [Parameter(Mandatory = $true)] [string] $TenantId,
 
-    # --- Optional: endpoints and API config (blank => use built-in default) ---
     [Parameter()] [string] $Authority               = '',
     [Parameter()] [string] $BapApiRoot              = '',
     [Parameter()] [string] $BapApiVersion           = '',
     [Parameter()] [string] $PowerPlatformScope      = '',
     [Parameter()] [string] $PpApiRoot               = '',
     [Parameter()] [string] $AppManagementApiVersion = '',
+    [Parameter()] [string] $FinOpsApiVersion        = '',
     [Parameter()] [string] $PollIntervalSec         = '',
     [Parameter()] [string] $PollTimeoutMin          = '',
 
-    # --- Optional: behavior (blank => use built-in default) ---
     [Parameter()] [string] $DumpDiagnostics     = '',
     [Parameter()] [string] $RetryFailedInstalls = '',
     [Parameter()] [string] $WhatIf              = '',
     [Parameter()] [string] $EnvironmentFilter   = '',
     [Parameter()] [string] $EnvironmentExclude  = '',
     [Parameter()] [string] $AppExclude          = '',
-    [Parameter()] [string] $UsePacFallback      = ''
+    [Parameter()] [string] $UsePacFallback      = '',
+
+    [Parameter()] [string] $UpdateFinOpsVersion     = '',
+    [Parameter()] [string] $FinOpsTargetVersion     = '',
+    [Parameter()] [string] $FinOpsEnvironmentFilter = '',
+    # Deployment types eligible for a version apply. LCS managed environments
+    # are excluded by default because they are updated through Lifecycle
+    # Services. Inventory is still reported for every F&O environment.
+    [Parameter()] [string] $FinOpsDeploymentTypes   = ''
 )
 
-# StrictMode intentionally off; counts are guarded explicitly via Get-Count.
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-# ---------------------------------------------------------------------
-# Built-in defaults. Change here only if you want a different baseline;
-# per-run overrides come from the variable group / pipeline, not from here.
-# ---------------------------------------------------------------------
 $Defaults = @{
     BapApiRoot              = 'https://api.bap.microsoft.com'
     BapApiVersion           = '2026-06-01'
     PowerPlatformScope      = 'https://api.powerplatform.com/.default'
     PpApiRoot               = 'https://api.powerplatform.com'
     AppManagementApiVersion = '2026-05-01-preview'
+    FinOpsApiVersion        = '2024-10-01'
     PollIntervalSec         = '20'
     PollTimeoutMin          = '60'
     DumpDiagnostics         = 'true'
@@ -92,13 +95,14 @@ $Defaults = @{
     WhatIf                  = 'false'
     EnvironmentFilter       = ''
     EnvironmentExclude      = ''
-    AppExclude              = 'msdyn_FinanceAndOperationsProvisioningApp'
+    AppExclude              = ''
     UsePacFallback          = 'false'
+    UpdateFinOpsVersion     = 'false'
+    FinOpsTargetVersion     = ''
+    FinOpsEnvironmentFilter = ''
+    FinOpsDeploymentTypes   = 'UnifiedDeveloper,UnifiedSandbox,UnifiedProduction'
 }
 
-# Return the provided value unless it is blank or an unexpanded Azure DevOps
-# macro like '$(bapApiVersion)' (which happens when the variable is not
-# defined in the group). In those cases the value is treated as "not set".
 function Get-OrDefault {
     param([AllowEmptyString()] [string] $Value, [AllowEmptyString()] [string] $Default)
     if ([string]::IsNullOrWhiteSpace($Value)) { return $Default }
@@ -107,43 +111,22 @@ function Get-OrDefault {
     return $Value
 }
 
-# Resolve a setting from: the explicit parameter, else the matching
-# environment variable (how the pipeline passes optional overrides), else
-# the built-in default. Unexpanded '$(name)' macros are treated as not set.
 function Resolve-Setting {
-    param(
-        [AllowEmptyString()] [string] $ParamValue,
-        [string]             $EnvName,
-        [AllowEmptyString()] [string] $Default
-    )
+    param([AllowEmptyString()] [string] $ParamValue, [string] $EnvName, [AllowEmptyString()] [string] $Default)
     $v = $ParamValue
-    $vClean = Get-OrDefault $v '__unset__'
-    if ($vClean -eq '__unset__') {
-        $v = [Environment]::GetEnvironmentVariable($EnvName)
-    }
+    if ((Get-OrDefault $v '__unset__') -eq '__unset__') { $v = [Environment]::GetEnvironmentVariable($EnvName) }
     return Get-OrDefault $v $Default
 }
 
-$Authority               = Resolve-Setting $Authority               'Authority'               "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
-$BapApiRoot              = Resolve-Setting $BapApiRoot              'BapApiRoot'              $Defaults.BapApiRoot
-$BapApiVersion           = Resolve-Setting $BapApiVersion           'BapApiVersion'           $Defaults.BapApiVersion
-$PowerPlatformScope      = Resolve-Setting $PowerPlatformScope      'PowerPlatformScope'      $Defaults.PowerPlatformScope
-$PpApiRoot               = Resolve-Setting $PpApiRoot               'PpApiRoot'               $Defaults.PpApiRoot
-$AppManagementApiVersion = Resolve-Setting $AppManagementApiVersion 'AppManagementApiVersion' $Defaults.AppManagementApiVersion
-$PollIntervalSec         = [int](Resolve-Setting $PollIntervalSec   'PollIntervalSec'         $Defaults.PollIntervalSec)
-$PollTimeoutMin          = [int](Resolve-Setting $PollTimeoutMin    'PollTimeoutMin'          $Defaults.PollTimeoutMin)
+function Resolve-Overridable {
+    param([AllowEmptyString()] [string] $ParamValue, [string] $OverrideEnvName, [string] $LibraryEnvName, [AllowEmptyString()] [string] $Default)
+    if ((Get-OrDefault $ParamValue '__unset__') -ne '__unset__') { return $ParamValue }
+    $ov = [Environment]::GetEnvironmentVariable($OverrideEnvName)
+    if ((Get-OrDefault $ov '__unset__') -ne '__unset__') { return (Get-OrDefault $ov $Default) }
+    $lv = [Environment]::GetEnvironmentVariable($LibraryEnvName)
+    return (Get-OrDefault $lv $Default)
+}
 
-$dumpDiagRaw = Resolve-Setting $DumpDiagnostics     'DumpDiagnostics'     $Defaults.DumpDiagnostics
-$retryRaw    = Resolve-Setting $RetryFailedInstalls 'RetryFailedInstalls' $Defaults.RetryFailedInstalls
-$whatIfRaw   = Resolve-Setting $WhatIf              'WhatIf'              $Defaults.WhatIf
-$usePacRaw   = Resolve-Setting $UsePacFallback      'UsePacFallback'      $Defaults.UsePacFallback
-$envFilter   = Resolve-Setting $EnvironmentFilter   'EnvironmentFilter'   $Defaults.EnvironmentFilter
-$envExcl     = Resolve-Setting $EnvironmentExclude  'EnvironmentExclude'  $Defaults.EnvironmentExclude
-$appExclIn   = Resolve-Setting $AppExclude          'AppExclude'          $Defaults.AppExclude
-
-# ---------------------------------------------------------------------
-# Small utilities
-# ---------------------------------------------------------------------
 function Get-Count {
     param($Value)
     $n = 0
@@ -160,15 +143,27 @@ function ConvertTo-Bool {
 function Split-List {
     param([AllowEmptyString()] [string] $Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
-    $items = $Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-    return ,([string[]]@($items))
+    $out = @()
+    foreach ($piece in $Text.Split(',')) {
+        $t = $piece.Trim()
+        if ($t -ne '') { $out += $t }
+    }
+    return $out
+}
+
+function Join-Names {
+    param($Items)
+    $parts = @()
+    foreach ($i in $Items) { if ($null -ne $i) { $parts += [string]$i } }
+    if ($parts.Count -eq 0) { return '' }
+    return [string]::Join(', ', $parts)
 }
 
 function Format-Scope {
     param([AllowEmptyString()] [string] $Raw, [string] $EmptyLabel)
     $list = Split-List $Raw
     if ((Get-Count $list) -eq 0) { return $EmptyLabel }
-    return ($list -join ', ')
+    return (Join-Names $list)
 }
 
 function Write-Section {
@@ -177,58 +172,117 @@ function Write-Section {
     Write-Host "===== $Text ====="
 }
 
-$dumpDiag = ConvertTo-Bool $dumpDiagRaw
-$retry    = ConvertTo-Bool $retryRaw
-$planOnly = ConvertTo-Bool $whatIfRaw
-$usePac   = ConvertTo-Bool $usePacRaw
-
-$Config = [ordered]@{
-    Authority               = $Authority
-    BapApiRoot              = $BapApiRoot.TrimEnd('/')
-    BapScope                = "$($BapApiRoot.TrimEnd('/'))/.default"
-    BapApiVersion           = $BapApiVersion
-    PowerPlatformScope      = $PowerPlatformScope
-    PpApiRoot               = $PpApiRoot.TrimEnd('/')
-    AppManagementApiVersion = $AppManagementApiVersion
-    PollIntervalSec         = $PollIntervalSec
-    PollTimeoutMin          = $PollTimeoutMin
+function Get-ErrorText {
+    param($ErrorRecord)
+    $parts = @()
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $parts += [string]$ErrorRecord.ErrorDetails.Message }
+    if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message)       { $parts += [string]$ErrorRecord.Exception.Message }
+    if ($parts.Count -eq 0) { return [string]$ErrorRecord }
+    return [string]::Join(' ', $parts)
 }
 
-# ---------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------
+$cfgAuthority  = Resolve-Setting $Authority               'Authority'               "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+$cfgBapRoot    = Resolve-Setting $BapApiRoot              'BapApiRoot'              $Defaults.BapApiRoot
+$cfgBapVersion = Resolve-Setting $BapApiVersion           'BapApiVersion'           $Defaults.BapApiVersion
+$cfgPpScope    = Resolve-Setting $PowerPlatformScope      'PowerPlatformScope'      $Defaults.PowerPlatformScope
+$cfgPpRoot     = Resolve-Setting $PpApiRoot               'PpApiRoot'               $Defaults.PpApiRoot
+$cfgAppMgmtVer = Resolve-Setting $AppManagementApiVersion 'AppManagementApiVersion' $Defaults.AppManagementApiVersion
+$cfgFinOpsVer  = Resolve-Setting $FinOpsApiVersion        'FinOpsApiVersion'        $Defaults.FinOpsApiVersion
+$cfgPollSec    = [int](Resolve-Setting $PollIntervalSec   'PollIntervalSec'         $Defaults.PollIntervalSec)
+$cfgPollMin    = [int](Resolve-Setting $PollTimeoutMin    'PollTimeoutMin'          $Defaults.PollTimeoutMin)
+
+$optDumpDiag   = ConvertTo-Bool (Resolve-Setting     $DumpDiagnostics     'DumpDiagnostics'     $Defaults.DumpDiagnostics)
+$optRetry      = ConvertTo-Bool (Resolve-Setting     $RetryFailedInstalls 'RetryFailedInstalls' $Defaults.RetryFailedInstalls)
+$optPlanOnly   = ConvertTo-Bool (Resolve-Overridable $WhatIf         'WhatIfOverride'         'WhatIf'         $Defaults.WhatIf)
+$optUsePac     = ConvertTo-Bool (Resolve-Overridable $UsePacFallback 'UsePacFallbackOverride' 'UsePacFallback' $Defaults.UsePacFallback)
+$optEnvFilter  = Resolve-Setting $EnvironmentFilter  'EnvironmentFilter'  $Defaults.EnvironmentFilter
+$optEnvExclude = Resolve-Setting $EnvironmentExclude 'EnvironmentExclude' $Defaults.EnvironmentExclude
+$optAppExclude = Resolve-Setting $AppExclude         'AppExclude'         $Defaults.AppExclude
+
+$optDoFinOps      = ConvertTo-Bool (Resolve-Overridable $UpdateFinOpsVersion 'UpdateFinOpsVersionOverride' 'UpdateFinOpsVersion' $Defaults.UpdateFinOpsVersion)
+$optFinOpsTarget  = Resolve-Overridable $FinOpsTargetVersion 'FinOpsTargetVersionOverride' 'FinOpsTargetVersion' $Defaults.FinOpsTargetVersion
+$optFinOpsEnvList = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnvironmentFilter' $Defaults.FinOpsEnvironmentFilter
+$optFinOpsDepTypes= Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
+
+$Config = [ordered]@{
+    Authority               = $cfgAuthority
+    BapApiRoot              = $cfgBapRoot.TrimEnd('/')
+    BapScope                = "$($cfgBapRoot.TrimEnd('/'))/.default"
+    BapApiVersion           = $cfgBapVersion
+    PowerPlatformScope      = $cfgPpScope
+    PpApiRoot               = $cfgPpRoot.TrimEnd('/')
+    AppManagementApiVersion = $cfgAppMgmtVer
+    FinOpsApiVersion        = $cfgFinOpsVer
+    PollIntervalSec         = $cfgPollSec
+    PollTimeoutMin          = $cfgPollMin
+}
+
 function Get-Token {
     param([string] $Scope)
-    $body = @{
-        client_id     = $ClientId
-        client_secret = $ClientSecret
-        grant_type    = 'client_credentials'
-        scope         = $Scope
-    }
+    $body = @{ client_id = $ClientId; client_secret = $ClientSecret; grant_type = 'client_credentials'; scope = $Scope }
     $r = Invoke-RestMethod -Method POST -Uri $Config.Authority -Body $body `
         -ContentType 'application/x-www-form-urlencoded' -ErrorAction Stop
     if (-not $r.access_token) { throw "No access_token for scope '$Scope'." }
     return $r.access_token
 }
 
-# ---------------------------------------------------------------------
-# URL builder for the Power Platform App Management API
-# ---------------------------------------------------------------------
+# Status-aware call. Never throws on an HTTP error.
+function Invoke-PpRest {
+    param(
+        [string] $Method = 'GET',
+        [Parameter(Mandatory)] [string] $RequestUri,
+        [Parameter(Mandatory)] [hashtable] $Headers,
+        [string] $Body = ''
+    )
+    $status = 0
+    $text   = ''
+    try {
+        $p = @{ Method = $Method; Uri = $RequestUri; Headers = $Headers; SkipHttpErrorCheck = $true; ErrorAction = 'Stop' }
+        if ($Body -ne '') { $p['Body'] = $Body; $p['ContentType'] = 'application/json' }
+        $r = Invoke-WebRequest @p
+        $status = [int]$r.StatusCode
+        if ($null -ne $r.Content) { $text = [string]$r.Content }
+    }
+    catch {
+        $status = -1
+        $text = (Get-ErrorText -ErrorRecord $_)
+    }
+    $json = $null
+    if ($text -ne '') {
+        $t = $text.Trim()
+        $i = $t.IndexOfAny([char[]]@('{','['))
+        if ($i -ge 0) { try { $json = $t.Substring($i) | ConvertFrom-Json } catch { $json = $null } }
+    }
+    return [pscustomobject]@{ Status = $status; Text = $text; Json = $json }
+}
+
+# Returns the API error code when present, for factual reporting.
+function Get-ApiErrorCode {
+    param($Response)
+    if ($null -eq $Response) { return '' }
+    if ($Response.Json -and $Response.Json.code)       { return [string]$Response.Json.code }
+    if ($Response.Json -and $Response.Json.error -and $Response.Json.error.code) { return [string]$Response.Json.error.code }
+    if ($Response.Text -and ([string]$Response.Text) -match 'does not match any known API routes') { return 'RouteNotFound' }
+    return ''
+}
+
 function New-PpUrl {
     param([Parameter(Mandatory)] [string] $Path, [hashtable] $Query = @{})
     $b = [System.UriBuilder]::new("$($Config.PpApiRoot)$Path")
-    $pairs = New-Object System.Collections.Generic.List[string]
+    $pairs = @()
     foreach ($k in $Query.Keys) {
-        $pairs.Add("$([System.Uri]::EscapeDataString([string]$k))=$([System.Uri]::EscapeDataString([string]$Query[$k]))")
+        $pairs += "$([System.Uri]::EscapeDataString([string]$k))=$([System.Uri]::EscapeDataString([string]$Query[$k]))"
     }
-    $pairs.Add("api-version=$([System.Uri]::EscapeDataString($Config.AppManagementApiVersion))")
+    $pairs += "api-version=$([System.Uri]::EscapeDataString($Config.AppManagementApiVersion))"
     $b.Query = [string]::Join('&', $pairs)
     return $b.Uri.AbsoluteUri
 }
 
-# ---------------------------------------------------------------------
-# Installed versions: read managed-solution versions from Dataverse.
-# ---------------------------------------------------------------------
+function New-FinOpsUri {
+    param([string] $EnvironmentId, [string] $Leaf)
+    return ($Config.PpApiRoot + '/dynamics/environments/' + $EnvironmentId + '/' + $Leaf + '?api-version=' + $Config.FinOpsApiVersion)
+}
+
 function Get-SolutionVersionMap {
     param([string] $InstanceUrl, [string[]] $DumpHints = @())
     $base = $InstanceUrl.TrimEnd('/')
@@ -268,13 +322,10 @@ function Get-SolutionVersionMap {
     return $map
 }
 
-# True only when $Available is strictly NEWER than $Installed (never downgrade).
 function Test-UpdateAvailable {
     param([string] $Available, [string] $Installed)
     $a = $null; $i = $null
-    if ([System.Version]::TryParse($Available, [ref]$a) -and [System.Version]::TryParse($Installed, [ref]$i)) {
-        return ($a -gt $i)
-    }
+    if ([System.Version]::TryParse($Available, [ref]$a) -and [System.Version]::TryParse($Installed, [ref]$i)) { return ($a -gt $i) }
     $as = $Available -split '\.'; $is = $Installed -split '\.'
     $n = [Math]::Max($as.Count, $is.Count)
     for ($k = 0; $k -lt $n; $k++) {
@@ -300,22 +351,31 @@ function Resolve-InstalledVersion {
 }
 
 function Test-AppExcluded {
-    param($Pkg, [string[]] $List)
+    param($Pkg, $List)
     if ((Get-Count $List) -eq 0) { return $false }
+    $keys = @()
+    foreach ($k in @($Pkg.uniqueName, $Pkg.localizedName, $Pkg.applicationName, $Pkg.applicationId)) {
+        if ($k) { $keys += ([string]$k).ToLower() }
+    }
     foreach ($item in $List) {
-        foreach ($key in @($Pkg.uniqueName, $Pkg.localizedName, $Pkg.applicationName, $Pkg.applicationId)) {
-            if ($key -and ([string]$key) -ieq $item) { return $true }
+        $needle = ([string]$item).Trim().ToLower()
+        if ($needle -eq '') { continue }
+        foreach ($k in $keys) {
+            if ($k -eq $needle) { return $true }
+            if ($needle.Contains('*')) { if ($k -like $needle) { return $true } }
+            elseif ($k.Contains($needle)) { return $true }
         }
     }
     return $false
 }
 
 function Test-EnvInList {
-    param($EnvObj, [string[]] $List)
+    param($EnvObj, $List)
     if ((Get-Count $List) -eq 0) { return $false }
     foreach ($item in $List) {
-        if ($EnvObj.DisplayName -and $EnvObj.DisplayName -ieq $item) { return $true }
-        if ($EnvObj.Id          -and $EnvObj.Id          -ieq $item) { return $true }
+        $needle = [string]$item
+        if ($EnvObj.DisplayName -and ([string]$EnvObj.DisplayName) -ieq $needle) { return $true }
+        if ($EnvObj.Id          -and ([string]$EnvObj.Id)          -ieq $needle) { return $true }
     }
     return $false
 }
@@ -332,61 +392,123 @@ function Invoke-AppInstall {
     $installUrl = New-PpUrl -Path "/appmanagement/environments/$EnvId/applicationPackages/$($Pkg.uniqueName)/install"
     $payload    = $Pkg | ConvertTo-Json -Depth 20 -Compress
     $resp = Invoke-RestMethod -Method POST -Uri $installUrl -Headers $Headers -ContentType 'application/json' -Body $payload -ErrorAction Stop
-    if ($resp.lastOperation.operationId) {
-        Write-Host "  Operation triggered: $($resp.lastOperation.operationId)"
-        return $true
-    }
+    if ($resp.lastOperation.operationId) { Write-Host "  Operation triggered: $($resp.lastOperation.operationId)"; return $true }
     Write-Host '  Install accepted (no operation id returned).'
     return $false
 }
 
-# ---------------------------------------------------------------------
-# PAC CLI fallback (best effort, opt-in)
-# ---------------------------------------------------------------------
+function Get-FinOpsMarker {
+    param($Packages)
+    $markers = @('msdyn_financeandoperationsprovisioningapp','financeandoperationsprovisioning','dynamics365financeandoperations')
+    foreach ($p in @($Packages)) {
+        $state = [string]$p.state
+        if ($state -ne 'Installed' -and $state -ne 'InstallFailed') { continue }
+        $un = ([string]$p.uniqueName).ToLower()
+        $ln = ([string]$p.localizedName).ToLower()
+        foreach ($m in $markers) {
+            if ($un.Contains($m)) { return [string]$p.uniqueName }
+        }
+        if ($ln.Contains('finance and operations') -and -not $ln.Contains('package manager')) {
+            return [string]$p.localizedName
+        }
+    }
+    return $null
+}
+
+function ConvertTo-FinOpsVersionList {
+    param($Json)
+    if ($null -eq $Json) { return @() }
+    $items = $Json
+    foreach ($p in @('availableVersions','value','versions','items','data')) {
+        if ($Json.$p) { $items = $Json.$p; break }
+    }
+    $versions = @()
+    foreach ($i in @($items)) {
+        $v = $null
+        if ($i -is [string]) { $v = $i }
+        else {
+            foreach ($p in @('version','applicationVersion','name','value')) {
+                if ($i.$p -and ([string]$i.$p) -match '^\d+(\.\d+)+') { $v = [string]$i.$p; break }
+            }
+        }
+        if ($v -and ($versions -notcontains $v)) { $versions += $v }
+    }
+    return $versions
+}
+
+function Select-HighestVersion {
+    param($Versions)
+    $best = $null
+    foreach ($v in $Versions) {
+        $s = [string]$v
+        if ($s -eq '') { continue }
+        if ($null -eq $best) { $best = $s; continue }
+        if (Test-UpdateAvailable -Available $s -Installed $best) { $best = $s }
+    }
+    return $best
+}
+
 $script:PacReady = $false
+
 function Initialize-Pac {
     if ($script:PacReady) { return $true }
     $pac = Get-Command pac -ErrorAction SilentlyContinue
-    if (-not $pac) { Write-Warning 'PAC fallback requested but the pac CLI is not installed on the agent. Skipping fallback.'; return $false }
+    if (-not $pac) { Write-Warning 'Power Platform CLI (pac) is not installed on the agent.'; return $false }
     try {
         pac auth create --name d365updater --applicationId $ClientId --clientSecret $ClientSecret --tenant $TenantId | Out-Null
+        $global:LASTEXITCODE = 0
         $script:PacReady = $true
         Write-Host '  PAC CLI authenticated with service principal.'
         return $true
-    } catch { Write-Warning "  PAC auth create failed. $($_.Exception.Message)"; return $false }
+    }
+    catch { Write-Warning "  PAC auth create failed. $($_.Exception.Message)"; $global:LASTEXITCODE = 0; return $false }
 }
+
 function Invoke-PacInstall {
     param([string] $EnvironmentId, $Pkg)
     if (-not (Initialize-Pac)) { return $false }
     try {
+        pac app-management install-application-package --environment $EnvironmentId --unique-name $Pkg.uniqueName
+        if ($LASTEXITCODE -eq 0) { $global:LASTEXITCODE = 0; Write-Host "  [PAC] Install triggered for '$($Pkg.uniqueName)'."; return $true }
         pac application install --environment-id $EnvironmentId --application-name $Pkg.uniqueName
-        if ($LASTEXITCODE -eq 0) { Write-Host "  [PAC] Update succeeded for '$($Pkg.uniqueName)'."; return $true }
-        Write-Warning "  [PAC] Exit code $LASTEXITCODE for '$($Pkg.uniqueName)'."; return $false
-    } catch { Write-Warning "  [PAC] Install failed for '$($Pkg.uniqueName)'. $($_.Exception.Message)"; return $false }
+        if ($LASTEXITCODE -eq 0) { $global:LASTEXITCODE = 0; Write-Host "  [PAC] Install triggered (legacy) for '$($Pkg.uniqueName)'."; return $true }
+        Write-Warning "  [PAC] Could not install '$($Pkg.uniqueName)'."
+        $global:LASTEXITCODE = 0
+        return $false
+    }
+    catch { Write-Warning "  [PAC] Install failed for '$($Pkg.uniqueName)'. $($_.Exception.Message)"; $global:LASTEXITCODE = 0; return $false }
 }
 
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
-$filterList  = Split-List $envFilter
-$excludeList = Split-List $envExcl
-$appExclude  = Split-List $appExclIn
-
-# Explicit overrides for apps whose package unique name does not match their
-# Dataverse solution name. Key = app uniqueName (lower); Value = solution
-# uniquename OR friendlyname (lower). Fill from the diagnostic output if needed.
+$filterList  = Split-List $optEnvFilter
+$excludeList = Split-List $optEnvExclude
+$appExcludeL = Split-List $optAppExclude
+$foFilterL   = Split-List $optFinOpsEnvList
+$foDepTypesL = Split-List $optFinOpsDepTypes
 $appSolutionAlias = @{}
 
 Write-Section 'Effective settings'
-Write-Host ("  BapApiVersion           : {0}" -f $Config.BapApiVersion)
-Write-Host ("  AppManagementApiVersion : {0}" -f $Config.AppManagementApiVersion)
-Write-Host ("  DumpDiagnostics         : {0}" -f $dumpDiag)
-Write-Host ("  RetryFailedInstalls     : {0}" -f $retry)
-Write-Host ("  WhatIf (plan only)      : {0}" -f $planOnly)
-Write-Host ("  UsePacFallback          : {0}" -f $usePac)
-Write-Host ("  EnvironmentFilter       : {0}" -f (Format-Scope -Raw $envFilter -EmptyLabel '(all)'))
-Write-Host ("  EnvironmentExclude      : {0}" -f (Format-Scope -Raw $envExcl   -EmptyLabel '(none)'))
-Write-Host ("  AppExclude              : {0}" -f (Format-Scope -Raw $appExclIn -EmptyLabel '(none)'))
+Write-Host ("  BapApiVersion           : " + $Config.BapApiVersion)
+Write-Host ("  AppManagementApiVersion : " + $Config.AppManagementApiVersion)
+Write-Host ("  DumpDiagnostics         : " + $optDumpDiag)
+Write-Host ("  RetryFailedInstalls     : " + $optRetry)
+Write-Host ("  WhatIf (plan only)      : " + $optPlanOnly)
+Write-Host ("  UsePacFallback          : " + $optUsePac)
+Write-Host ("  EnvironmentFilter       : " + (Format-Scope -Raw $optEnvFilter  -EmptyLabel '(all)'))
+Write-Host ("  EnvironmentExclude      : " + (Format-Scope -Raw $optEnvExclude -EmptyLabel '(none)'))
+Write-Host ("  AppExclude              : " + (Format-Scope -Raw $optAppExclude -EmptyLabel '(none)'))
+Write-Host ("  UpdateFinOpsVersion     : " + $optDoFinOps)
+if ($optDoFinOps) {
+    $tgtLabel = '(latest available)'
+    if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
+    Write-Host ("  FinOpsApiVersion        : " + $Config.FinOpsApiVersion)
+    Write-Host ("  FinOpsTargetVersion     : " + $tgtLabel)
+    Write-Host ("  FinOpsEnvironmentFilter : " + (Format-Scope -Raw $optFinOpsEnvList -EmptyLabel '(all detected F&O environments)'))
+    Write-Host ("  FinOpsDeploymentTypes   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+    Write-Host '  Note: LCS managed environments are inventoried but not version-updated.'
+}
 
 Write-Section 'Authenticating'
 $ppToken  = Get-Token $Config.PowerPlatformScope
@@ -400,28 +522,25 @@ Write-Section 'Listing environments'
 $envUri = "$($Config.BapApiRoot)/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments?`$expand=properties&api-version=$($Config.BapApiVersion)"
 $envResp = Invoke-RestMethod -Method GET -Uri $envUri -Headers $bapHeaders -ErrorAction Stop
 
-$environments = @(
-    foreach ($e in @($envResp.value)) {
-        $instanceUrl = $e.properties.linkedEnvironmentMetadata.instanceUrl
-        if (-not $instanceUrl) { continue }   # skip non-Dataverse environments
-        [pscustomobject]@{
-            Id          = $e.name
-            DisplayName = if ($e.properties.displayName) { $e.properties.displayName } else { $e.name }
-            InstanceUrl = $instanceUrl
-        }
-    }
-)
+$environments = @()
+foreach ($e in @($envResp.value)) {
+    $instanceUrl = $e.properties.linkedEnvironmentMetadata.instanceUrl
+    if (-not $instanceUrl) { continue }
+    $dn = $e.name
+    if ($e.properties.displayName) { $dn = $e.properties.displayName }
+    $environments += [pscustomobject]@{ Id = $e.name; DisplayName = $dn; InstanceUrl = $instanceUrl }
+}
 Write-Host "Found $(Get-Count $environments) Dataverse environment(s)"
 
-$environments = @(
-    foreach ($envObj in $environments) {
-        $inFilter  = ((Get-Count $filterList) -eq 0) -or (Test-EnvInList -EnvObj $envObj -List $filterList)
-        $inExclude = Test-EnvInList -EnvObj $envObj -List $excludeList
-        if ($inExclude) { Write-Host "  Skipping (excluded): $($envObj.DisplayName)"; continue }
-        if (-not $inFilter) { continue }
-        $envObj
-    }
-)
+$scoped = @()
+foreach ($envObj in $environments) {
+    $inFilter  = ((Get-Count $filterList) -eq 0) -or (Test-EnvInList -EnvObj $envObj -List $filterList)
+    $inExclude = Test-EnvInList -EnvObj $envObj -List $excludeList
+    if ($inExclude) { Write-Host "  Skipping (excluded): $($envObj.DisplayName)"; continue }
+    if (-not $inFilter) { continue }
+    $scoped += $envObj
+}
+$environments = $scoped
 Write-Host "Processing $(Get-Count $environments) environment(s) after filter and exclude."
 
 $knownUpdateHints = @('Customer Service Analytics','Customer Service Intelligence','Agent Productivity','appprofilemanager','AppProfileManager')
@@ -429,8 +548,10 @@ $knownUpdateHints = @('Customer Service Analytics','Customer Service Intelligenc
 $totalEnvironments = 0; $totalUpdates = 0; $totalRetries = 0; $totalOperations = 0
 $totalUpToDate = 0; $totalNoMatch = 0; $totalFailed = 0; $totalManual = 0; $totalExcluded = 0
 $solDumped = $false
-$manualList = New-Object System.Collections.Generic.List[object]
+$manualList     = @()
+$finOpsDetected = @()
 
+# ===================== PHASE 1: application updates =====================
 foreach ($envObj in $environments) {
     $envId = $envObj.Id; $envName = $envObj.DisplayName; $instanceUrl = $envObj.InstanceUrl
     $totalEnvironments++
@@ -441,16 +562,15 @@ foreach ($envObj in $environments) {
     Write-Host "##[section]ID: $envId"
     Write-Host '##[section]============================================================'
 
-    # AVAILABLE versions (Power Platform App Management API)
     try {
         $pkgUrl = New-PpUrl -Path "/appmanagement/environments/$envId/applicationPackages" -Query @{ appInstallState = 'All'; lcid = '1033' }
         $available = @((Invoke-RestMethod -Method GET -Uri $pkgUrl -Headers $ppHeaders -ErrorAction Stop).value)
     }
     catch { $totalFailed++; Write-Host "##[warning]Failed to list available packages for '$envName': $_"; continue }
 
-    # INSTALLED versions (Dataverse managed solutions; needs System Admin app-user)
     try {
-        $hints = if ($dumpDiag -and -not $solDumped) { @('crm','hub','sales','insight','productivity','globalization','quality','channel','customerservice','outlook') } else { @() }
+        $hints = @()
+        if ($optDumpDiag -and -not $solDumped) { $hints = @('crm','hub','sales','insight','productivity','globalization','quality','channel','customerservice','outlook') }
         $solMap = Get-SolutionVersionMap -InstanceUrl $instanceUrl -DumpHints $hints
         $solDumped = $true
     }
@@ -461,35 +581,44 @@ foreach ($envObj in $environments) {
         continue
     }
 
-    $candidates = @(
-        $available | Where-Object {
-            $_.uniqueName -and ( $_.state -eq 'Installed' -or ($retry -and $_.state -eq 'InstallFailed') )
-        }
-    )
+    $foMarker = Get-FinOpsMarker -Packages $available
+    if ($foMarker) {
+        Write-Host "Finance and Operations solutions present (package: $foMarker)."
+        $finOpsDetected += $envObj
+    }
+
+    $candidates = @()
+    foreach ($p in $available) {
+        if (-not $p.uniqueName) { continue }
+        if ($p.state -eq 'Installed' -or ($optRetry -and $p.state -eq 'InstallFailed')) { $candidates += $p }
+    }
     Write-Host "Installed apps evaluated: $(Get-Count $candidates)  (managed solutions read: $($solMap.Count))"
 
-    if ($dumpDiag) {
+    if ($optDumpDiag) {
         Write-Host '##[group]DIAGNOSTIC: installed (solution) vs available for known apps'
         foreach ($c in $candidates) {
             $isKnown = $false
             foreach ($h in $knownUpdateHints) { if ("$($c.localizedName)" -like "*$h*" -or "$($c.uniqueName)" -like "*$h*") { $isKnown = $true } }
             if ($isKnown) {
                 $iv = Resolve-InstalledVersion $c $solMap $appSolutionAlias
-                Write-Host (" - {0} [{1}]  installed: {2}  available: {3}" -f $c.localizedName, $c.uniqueName, $(if($iv){$iv}else{'<no matching solution>'}), $c.version)
+                $ivText = '<no matching solution>'
+                if ($iv) { $ivText = $iv }
+                Write-Host (" - {0} [{1}]  installed: {2}  available: {3}" -f $c.localizedName, $c.uniqueName, $ivText, $c.version)
             }
         }
         Write-Host '##[endgroup]'
     }
 
-    $envUpdates = 0; $envRetries = 0; $envUpToDate = 0; $envNoMatch = 0; $envExcluded = 0; $noMatchNames = @()
+    $envUpdates = 0; $envRetries = 0; $envUpToDate = 0; $envNoMatch = 0; $envExcluded = 0; $envManual = 0; $noMatchNames = @()
 
     foreach ($pkg in $candidates) {
-        $name  = if ($pkg.localizedName) { $pkg.localizedName } else { $pkg.uniqueName }
+        $name = $pkg.uniqueName
+        if ($pkg.localizedName) { $name = $pkg.localizedName }
         $avail = [string]$pkg.version
 
-        if (Test-AppExcluded -Pkg $pkg -List $appExclude) {
+        if (Test-AppExcluded -Pkg $pkg -List $appExcludeL) {
             $envExcluded++; $totalExcluded++
-            if ($dumpDiag) { Write-Host "  Skipping (app excluded): $name" }
+            if ($optDumpDiag) { Write-Host "  Skipping (app excluded): $name" }
             continue
         }
 
@@ -497,15 +626,19 @@ foreach ($envObj in $environments) {
             $envRetries++; $totalRetries++
             Write-Host ''
             Write-Host "Retrying failed installation: $name  (target version: $avail)"
-            if ($planOnly) { Write-Host '  [WhatIf] would retry install.'; continue }
+            if ($optPlanOnly) { Write-Host '  [WhatIf] would retry install.'; continue }
             try { if (Invoke-AppInstall -Pkg $pkg -EnvId $envId -Headers $ppHeaders) { $totalOperations++ } }
             catch {
-                $errText = $_.Exception.Message
+                $errText = Get-ErrorText -ErrorRecord $_
                 if (Test-CustomInstallExperience -Message $errText) {
                     $handled = $false
-                    if ($usePac) { $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
-                    if (-not $handled) { $totalManual++; $manualList.Add([pscustomobject]@{ Environment=$envName; App=$name; Installed=''; Available=$avail }); Write-Host "  '$name' requires manual install via PPAC." }
-                } else { $totalFailed++; Write-Host "##[warning]Failed to retry '$name': $_" }
+                    if ($optUsePac) { $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
+                    if (-not $handled) {
+                        $envManual++; $totalManual++
+                        $manualList += [pscustomobject]@{ Environment=$envName; App=$name; Installed=''; Available=$avail }
+                        Write-Host "  Needs the Power Platform Admin Center install wizard."
+                    }
+                } else { $totalFailed++; Write-Host "##[warning]Failed to retry '$name': $errText" }
             }
             continue
         }
@@ -517,28 +650,276 @@ foreach ($envObj in $environments) {
         $envUpdates++; $totalUpdates++
         Write-Host ''
         Write-Host "Update available: $name  installed: $inst  available: $avail"
-        if ($planOnly) { Write-Host "  [WhatIf] would update to $avail."; continue }
+        if ($optPlanOnly) { Write-Host "  [WhatIf] would update to $avail."; continue }
         try { if (Invoke-AppInstall -Pkg $pkg -EnvId $envId -Headers $ppHeaders) { $totalOperations++ } }
         catch {
-            $errText = $_.Exception.Message
+            $errText = Get-ErrorText -ErrorRecord $_
             if (Test-CustomInstallExperience -Message $errText) {
                 $handled = $false
-                if ($usePac) { Write-Host "  '$name' needs a custom install. Trying PAC CLI fallback..."; $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
+                if ($optUsePac) { Write-Host "  Needs a custom install. Trying PAC CLI fallback..."; $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
                 if ($handled) { Write-Host "  Updated '$name' via PAC CLI." }
-                else { $totalManual++; $manualList.Add([pscustomobject]@{ Environment=$envName; App=$name; Installed=$inst; Available=$avail }); Write-Host "  '$name' requires manual install via Power Platform Admin Center. Consider adding it to AppExclude." }
-            } else { $totalFailed++; Write-Host "##[warning]Failed to update '$name': $_" }
+                else {
+                    $envManual++; $totalManual++
+                    $manualList += [pscustomobject]@{ Environment=$envName; App=$name; Installed=$inst; Available=$avail }
+                    Write-Host "  Needs the Power Platform Admin Center install wizard (reported below, not a failure)."
+                }
+            } else { $totalFailed++; Write-Host "##[warning]Failed to update '$name': $errText" }
         }
     }
 
-    if ($dumpDiag -and (Get-Count $noMatchNames) -gt 0) {
+    if ($optDumpDiag -and (Get-Count $noMatchNames) -gt 0) {
         Write-Host '##[group]Apps with no matching managed solution (not evaluated for update)'
-        $noMatchNames | ForEach-Object { Write-Host " - $_" }
+        foreach ($nm in $noMatchNames) { Write-Host " - $nm" }
         Write-Host '##[endgroup]'
     }
     Write-Host ''
-    Write-Host "Environment summary -> updates: $envUpdates | failed-retries: $envRetries | up-to-date: $envUpToDate | no solution match: $envNoMatch | app-excluded: $envExcluded"
+    Write-Host "Environment summary -> updates: $envUpdates | failed-retries: $envRetries | up-to-date: $envUpToDate | no solution match: $envNoMatch | app-excluded: $envExcluded | manual: $envManual"
 }
 
+# ======= PHASE 2: Finance and Operations inventory and version update =======
+#
+# Every F&O environment is probed individually. Nothing is assumed from the
+# result of another environment. Reporting states what the API returned.
+#
+# Version apply is attempted only for eligible deployment types. LCS managed
+# environments are inventoried but never version-updated here, because their
+# application updates are driven through Lifecycle Services.
+$foInventory   = @()
+$foChecked     = 0
+$foApplied     = 0
+$foFailed      = 0
+$foPropsFailed = 0
+$foNotEligible = 0
+$foNoVersions  = 0
+
+if ($optDoFinOps) {
+    try {
+        Write-Host ''
+        Write-Host '##[section]============================================================'
+        Write-Host '##[section]FINANCE AND OPERATIONS'
+        Write-Host '##[section]============================================================'
+
+        $foTargets = @()
+        foreach ($e in $finOpsDetected) {
+            if ((Get-Count $foFilterL) -gt 0) {
+                if (-not (Test-EnvInList -EnvObj $e -List $foFilterL)) { continue }
+            }
+            $foTargets += $e
+        }
+
+        if ((Get-Count $foTargets) -eq 0) {
+            Write-Host 'No Finance and Operations environments to process.'
+        }
+        else {
+            $tgtLabel = '(latest available)'
+            if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
+            Write-Host ("Environments to inspect     : " + (Get-Count $foTargets))
+            Write-Host ("Target version              : " + $tgtLabel)
+            Write-Host ("Eligible deployment types   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+            Write-Host 'Each environment is probed separately. Nothing is assumed from another.'
+
+            foreach ($envObj in $foTargets) {
+                $foChecked++
+                $envNameFo = [string]$envObj.DisplayName
+                $envIdFo   = [string]$envObj.Id
+
+                Write-Host ''
+                Write-Host ('##[group]F&O: ' + $envNameFo)
+
+                # ---------- Inventory ----------
+                $propUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsproperties'
+                $pr = Invoke-PpRest -Method 'GET' -RequestUri $propUri -Headers $ppHeaders
+
+                if ($pr.Status -lt 200 -or $pr.Status -ge 300) {
+                    $foPropsFailed++
+                    $codeText = Get-ApiErrorCode -Response $pr
+                    if ($codeText -ne '') {
+                        Write-Host ('  finopsproperties returned HTTP ' + $pr.Status + ' (' + $codeText + ').')
+                    } else {
+                        Write-Host ('  finopsproperties returned HTTP ' + $pr.Status + '.')
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                $curVer = ''; $platVer = ''; $depType = ''
+                $aosInt = ''; $aosBatch = ''; $demo = ''; $sched = @()
+
+                if ($pr.Json) {
+                    if ($pr.Json.applicationVersion) { $curVer  = [string]$pr.Json.applicationVersion }
+                    if ($pr.Json.platformVersion)    { $platVer = [string]$pr.Json.platformVersion }
+                    if ($pr.Json.deploymentType)     { $depType = [string]$pr.Json.deploymentType }
+                    if ($null -ne $pr.Json.lastObservedAOSCount -and $pr.Json.maxAOSCount) {
+                        $aosInt = [string]$pr.Json.lastObservedAOSCount + ' / ' + [string]$pr.Json.maxAOSCount
+                    }
+                    if ($null -ne $pr.Json.lastObservedBatchAOSCount -and $pr.Json.maxBatchAOSCount) {
+                        $aosBatch = [string]$pr.Json.lastObservedBatchAOSCount + ' / ' + [string]$pr.Json.maxBatchAOSCount
+                    }
+                    if ($pr.Json.demoDataset)      { $demo  = [string]$pr.Json.demoDataset }
+                    if ($pr.Json.scheduledActions) { $sched = @($pr.Json.scheduledActions) }
+                }
+
+                Write-Host ('  Application version : ' + $curVer)
+                if ($platVer  -ne '') { Write-Host ('  Platform version    : ' + $platVer) }
+                if ($depType  -ne '') { Write-Host ('  Deployment type     : ' + $depType) }
+                if ($aosInt   -ne '') { Write-Host ('  AOS (interactive)   : ' + $aosInt) }
+                if ($aosBatch -ne '') { Write-Host ('  AOS (batch)         : ' + $aosBatch) }
+                if ($demo     -ne '') { Write-Host ('  Demo dataset        : ' + $demo) }
+                if ((Get-Count $sched) -gt 0) { Write-Host ('  Scheduled actions   : ' + (Get-Count $sched)) }
+                else { Write-Host '  Scheduled actions   : none' }
+
+                $rowNote = ''
+
+                # ---------- Eligibility by deployment type ----------
+                $eligible = $true
+                if ((Get-Count $foDepTypesL) -gt 0) {
+                    $eligible = $false
+                    foreach ($dt in $foDepTypesL) {
+                        if ($depType -ieq ([string]$dt)) { $eligible = $true; break }
+                    }
+                }
+
+                if (-not $eligible) {
+                    $foNotEligible++
+                    $rowNote = 'version apply skipped (' + $depType + ')'
+                    if ($depType -like 'LCS*') {
+                        Write-Host '  Version apply skipped. LCS managed environments are updated through'
+                        Write-Host '  Lifecycle Services, not the Power Platform API. Inventory only.'
+                    }
+                    else {
+                        Write-Host ('  Version apply skipped. Deployment type ' + $depType + ' is not in FinOpsDeploymentTypes.')
+                    }
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                # ---------- Available versions (probed per environment) ----------
+                $verUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsversions'
+                $vr = Invoke-PpRest -Method 'GET' -RequestUri $verUri -Headers $ppHeaders
+
+                if ($vr.Status -lt 200 -or $vr.Status -ge 300) {
+                    $codeText = Get-ApiErrorCode -Response $vr
+                    if ($codeText -eq 'RouteNotFound') {
+                        $foNoVersions++
+                        $rowNote = 'versions: RouteNotFound'
+                        Write-Host '  finopsversions returned HTTP 404 RouteNotFound.'
+                        Write-Host '  finopsproperties succeeded for this environment, so the token, the'
+                        Write-Host '  environment id and the api-version are accepted. This specific route'
+                        Write-Host '  did not resolve on this endpoint.'
+                    }
+                    elseif ($vr.Status -eq 403) {
+                        $foFailed++
+                        $rowNote = 'versions: 403'
+                        Write-Host '  finopsversions returned HTTP 403. The service principal lacks permission.'
+                    }
+                    else {
+                        $foFailed++
+                        $rowNote = 'versions: HTTP ' + $vr.Status
+                        if ($codeText -ne '') { Write-Host ('  finopsversions returned HTTP ' + $vr.Status + ' (' + $codeText + ').') }
+                        else { Write-Host ('  finopsversions returned HTTP ' + $vr.Status + '.') }
+                    }
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                $availableVersions = @(ConvertTo-FinOpsVersionList -Json $vr.Json)
+                if ((Get-Count $availableVersions) -eq 0) {
+                    $foNoVersions++
+                    $rowNote = 'no versions returned'
+                    Write-Host '  finopsversions returned HTTP 200 but no versions were listed.'
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                Write-Host ('  Available versions  : ' + (Join-Names $availableVersions))
+
+                $target = $optFinOpsTarget
+                if ($target -eq '') {
+                    $target = Select-HighestVersion -Versions $availableVersions
+                    Write-Host ('  Latest available    : ' + [string]$target)
+                }
+                elseif ($availableVersions -notcontains $target) {
+                    $foFailed++
+                    $rowNote = 'target not available'
+                    Write-Warning ("  Requested version '" + $target + "' is not available here.")
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                if ($curVer -ne '' -and $target -and -not (Test-UpdateAvailable -Available ([string]$target) -Installed $curVer)) {
+                    $rowNote = 'up to date'
+                    Write-Host ('  Already at or above ' + [string]$target + '. Nothing to apply.')
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
+
+                # ---------- Apply ----------
+                if ($optPlanOnly) {
+                    $foApplied++
+                    $rowNote = 'would apply ' + [string]$target
+                    Write-Host ('  [WhatIf] would apply F&O version ' + [string]$target + '.')
+                }
+                else {
+                    $applyUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf ('finopsversions/' + [string]$target + '/apply')
+                    $ar = Invoke-PpRest -Method 'POST' -RequestUri $applyUri -Headers $ppHeaders
+                    if ($ar.Status -eq 202) {
+                        $foApplied++
+                        $rowNote = 'applying ' + [string]$target
+                        Write-Host ('  Accepted (202). Applying ' + [string]$target + '. Long-running operation.')
+                        if ($ar.Json -and $ar.Json.operationId) { Write-Host ('  Operation id        : ' + [string]$ar.Json.operationId) }
+                    }
+                    elseif ($ar.Status -eq 204) {
+                        $rowNote = 'up to date (204)'
+                        Write-Host '  No content (204). Already at or above the requested version.'
+                    }
+                    else {
+                        $foFailed++
+                        $codeText = Get-ApiErrorCode -Response $ar
+                        $rowNote = 'apply: HTTP ' + $ar.Status
+                        if ($codeText -ne '') { Write-Host ('  Apply returned HTTP ' + $ar.Status + ' (' + $codeText + ').') }
+                        else { Write-Host ('  Apply returned HTTP ' + $ar.Status + '.') }
+                    }
+                }
+
+                $foInventory += [pscustomobject]@{
+                    Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                    Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                }
+                Write-Host '##[endgroup]'
+            }
+
+            if ((Get-Count $foInventory) -gt 0) {
+                Write-Host ''
+                Write-Host '##[group]Finance and Operations inventory'
+                $foInventory | Sort-Object Deployment, Environment | Format-Table Environment, Application, Platform, Deployment, AOS, Note -AutoSize | Out-String | Write-Host
+                Write-Host '##[endgroup]'
+            }
+        }
+    }
+    catch { Write-Host ("##[warning]F&O phase error (non-fatal): " + $_.Exception.Message) }
+}
+
+# ============================ SUMMARY ============================
 Write-Host ''
 Write-Host '##[section]============================================================'
 Write-Host '##[section]TENANT SUMMARY'
@@ -552,14 +933,30 @@ Write-Host "No matching solution (skipped): $totalNoMatch"
 Write-Host "App excluded (skipped):         $totalExcluded"
 Write-Host "Manual install required:        $totalManual"
 Write-Host "Failures/warnings:              $totalFailed"
+Write-Host "F&O environments detected:      $(Get-Count $finOpsDetected)"
+if ($optDoFinOps) {
+    Write-Host "F&O environments inspected:     $foChecked"
+    Write-Host "F&O inventory collected:        $(Get-Count $foInventory)"
+    if ($foPropsFailed -gt 0) { Write-Host "F&O properties unavailable:     $foPropsFailed" }
+    Write-Host "Version apply skipped (type):   $foNotEligible"
+    Write-Host "No version list returned:       $foNoVersions"
+    Write-Host "F&O versions applied/planned:   $foApplied"
+    Write-Host "F&O failures:                   $foFailed"
+}
+elseif ((Get-Count $finOpsDetected) -gt 0) {
+    Write-Host "F&O phase:                      disabled (set updateFinOpsVersion = true)"
+}
 
 if ((Get-Count $manualList) -gt 0) {
     Write-Host ''
     Write-Host '##[group]Manual install required (use Power Platform Admin Center)'
     $manualList | Sort-Object Environment, App | Format-Table Environment, App, Installed, Available -AutoSize | Out-String | Write-Host
-    Write-Host 'These apps use a Custom Install Experience and cannot be installed by the API. Add them to AppExclude to silence future runs.'
+    Write-Host 'These apps use a Custom Install Experience and cannot be installed by the API.'
     Write-Host '##[endgroup]'
 }
 
 Write-Host ''
 Write-Host 'All environments processed'
+
+$global:LASTEXITCODE = 0
+exit 0
