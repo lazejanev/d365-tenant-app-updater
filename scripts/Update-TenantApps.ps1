@@ -2,7 +2,7 @@
 .SYNOPSIS
     Updates all Dynamics 365 first-party (Dataverse) apps across every
     environment on a tenant, reports Finance and Operations inventory, and
-    applies F&O application versions on eligible environments.
+    optionally applies F&O application versions on eligible environments.
 
 .DESCRIPTION
     Phase 1 (always runs)
@@ -10,32 +10,64 @@
       packages, reads installed versions from Dataverse managed solutions,
       and installs updates where a strictly newer version exists.
 
-    Phase 2 (opt-in, UpdateFinOpsVersion)
-      a. INVENTORY - runs for EVERY environment where F&O is installed.
-         Reports application version, platform version, deployment type,
-         AOS counts, demo dataset and scheduled actions.
-      b. VERSION UPDATE - only for eligible deployment types. LCS managed
-         environments (LCSSandbox, LCSProduction) are deliberately excluded
-         because their application updates are driven through Lifecycle
-         Services, not the Power Platform API.
+    Phase 2 - Finance and Operations
+      a. INVENTORY - always runs, read-only, no switch. Reports application
+         version, platform version, deployment type, AOS counts, demo
+         dataset and scheduled actions for every environment where F&O is
+         installed, then prints a consolidated table. It costs one GET per
+         F&O environment and changes nothing, so it is not worth gating.
+      b. VERSION APPLY - controlled by FinOpsApplyVersion, default false.
+         This is the ONLY switch in the Finance and Operations phase, and
+         the only way a version is ever applied. It changes the
+         environment. Only eligible deployment types are considered. LCS
+         managed environments (LCSSandbox, LCSProduction) are deliberately
+         excluded because their application updates are driven through
+         Lifecycle Services, not the Power Platform API.
+
+      Version apply is gated behind a live route check, so it begins
+      working automatically once the finopsversions route is available on
+      an endpoint. That is exactly why it must be set explicitly: nothing
+      else - no default, no legacy variable, no platform change - can turn
+      it on.
 
 .NOTES
+    v2.3.0
+      - FinOpsApplyVersion is the single Finance and Operations variable.
+        Inventory always runs and is read-only. There is no separate switch
+        for it, and no legacy alias. If a variable named FinOpsInventory or
+        UpdateFinOpsVersion is present in the environment, it is ignored
+        and the script says so once in the log.
+      - PollIntervalSec and PollTimeoutMin removed. They were resolved but
+        never read; no polling loop existed. Rather than keep dead settings
+        that the documentation described as real behaviour, they are gone.
+        Install completion polling may return once the operation status
+        route is confirmed against a live endpoint.
+      - Transport failures are now reported as transport failures instead of
+        being rendered as "HTTP -1".
+      - The Finance and Operations phase requires PowerShell 7. On Windows
+        PowerShell 5.1 it is skipped with a clear message instead of failing
+        obscurely inside Invoke-WebRequest.
+
     v2.2.0
       - Every environment is probed individually. An earlier build stopped
         after the first RouteNotFound and assumed the rest would behave the
         same, which hid per deployment type differences. A 404 over REST
         costs about 25 ms, so probing all of them is effectively free.
       - Reporting is factual. The script states what the API returned
-        (for example RouteNotFound) rather than asserting a cause such as
-        regional rollout.
-      - New variable FinOpsDeploymentTypes controls which deployment types
-        are eligible for a version apply. Default excludes LCS managed
-        environments. Inventory is still collected for them.
+        (for example RouteNotFound) rather than asserting a cause.
+      - FinOpsDeploymentTypes controls which deployment types are eligible
+        for a version apply. Default excludes LCS managed environments.
 
-    Verified 2026-09-19 (westeurope, app-only token):
-      GET /dynamics/environments/{id}/finopsproperties -> HTTP 200
-      GET /dynamics/environments/{id}/finopsversions   -> HTTP 404 RouteNotFound
-    So auth, environment id and api-version are correct.
+    Verified against a live tenant (westeurope, app-only token), reproduced
+    independently via both raw REST calls and the `pac dynamics` CLI:
+      GET  /dynamics/environments/{id}/finopsproperties            -> HTTP 200
+      GET  /dynamics/environments/{id}/finopsversions               -> HTTP 404 RouteNotFound
+      POST /dynamics/environments/{id}/finopsversions/{v}/apply     -> HTTP 404 RouteNotFound
+    finopsproperties succeeding on the identical token, environment id and
+    api-version rules out auth, tenant and environment id as the cause.
+    The versions route and its apply sub-route are simply not deployed to
+    this endpoint yet. This is not asserted in the log as the cause of a
+    404; the log only ever states what the API returned.
 
     PowerShell variable names are case-insensitive, so every local here is
     prefixed (opt*, cfg*) and can never collide with a parameter name.
@@ -58,8 +90,6 @@ param(
     [Parameter()] [string] $PpApiRoot               = '',
     [Parameter()] [string] $AppManagementApiVersion = '',
     [Parameter()] [string] $FinOpsApiVersion        = '',
-    [Parameter()] [string] $PollIntervalSec         = '',
-    [Parameter()] [string] $PollTimeoutMin          = '',
 
     [Parameter()] [string] $DumpDiagnostics     = '',
     [Parameter()] [string] $RetryFailedInstalls = '',
@@ -69,12 +99,14 @@ param(
     [Parameter()] [string] $AppExclude          = '',
     [Parameter()] [string] $UsePacFallback      = '',
 
-    [Parameter()] [string] $UpdateFinOpsVersion     = '',
+    # The ONLY Finance and Operations switch. Default false.
+    # Inventory always runs and is read-only, so it has no switch.
+    [Parameter()] [string] $FinOpsApplyVersion      = '',
+
+    # Supporting settings for the apply. They refine WHAT and WHERE, but
+    # none of them can enable an apply on their own.
     [Parameter()] [string] $FinOpsTargetVersion     = '',
     [Parameter()] [string] $FinOpsEnvironmentFilter = '',
-    # Deployment types eligible for a version apply. LCS managed environments
-    # are excluded by default because they are updated through Lifecycle
-    # Services. Inventory is still reported for every F&O environment.
     [Parameter()] [string] $FinOpsDeploymentTypes   = ''
 )
 
@@ -88,8 +120,6 @@ $Defaults = @{
     PpApiRoot               = 'https://api.powerplatform.com'
     AppManagementApiVersion = '2026-05-01-preview'
     FinOpsApiVersion        = '2024-10-01'
-    PollIntervalSec         = '20'
-    PollTimeoutMin          = '60'
     DumpDiagnostics         = 'true'
     RetryFailedInstalls     = 'true'
     WhatIf                  = 'false'
@@ -97,7 +127,7 @@ $Defaults = @{
     EnvironmentExclude      = ''
     AppExclude              = ''
     UsePacFallback          = 'false'
-    UpdateFinOpsVersion     = 'false'
+    FinOpsApplyVersion      = 'false'
     FinOpsTargetVersion     = ''
     FinOpsEnvironmentFilter = ''
     FinOpsDeploymentTypes   = 'UnifiedDeveloper,UnifiedSandbox,UnifiedProduction'
@@ -181,6 +211,9 @@ function Get-ErrorText {
     return [string]::Join(' ', $parts)
 }
 
+# ---------------------------------------------------------------------
+# Settings resolution
+# ---------------------------------------------------------------------
 $cfgAuthority  = Resolve-Setting $Authority               'Authority'               "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
 $cfgBapRoot    = Resolve-Setting $BapApiRoot              'BapApiRoot'              $Defaults.BapApiRoot
 $cfgBapVersion = Resolve-Setting $BapApiVersion           'BapApiVersion'           $Defaults.BapApiVersion
@@ -188,8 +221,6 @@ $cfgPpScope    = Resolve-Setting $PowerPlatformScope      'PowerPlatformScope'  
 $cfgPpRoot     = Resolve-Setting $PpApiRoot               'PpApiRoot'               $Defaults.PpApiRoot
 $cfgAppMgmtVer = Resolve-Setting $AppManagementApiVersion 'AppManagementApiVersion' $Defaults.AppManagementApiVersion
 $cfgFinOpsVer  = Resolve-Setting $FinOpsApiVersion        'FinOpsApiVersion'        $Defaults.FinOpsApiVersion
-$cfgPollSec    = [int](Resolve-Setting $PollIntervalSec   'PollIntervalSec'         $Defaults.PollIntervalSec)
-$cfgPollMin    = [int](Resolve-Setting $PollTimeoutMin    'PollTimeoutMin'          $Defaults.PollTimeoutMin)
 
 $optDumpDiag   = ConvertTo-Bool (Resolve-Setting     $DumpDiagnostics     'DumpDiagnostics'     $Defaults.DumpDiagnostics)
 $optRetry      = ConvertTo-Bool (Resolve-Setting     $RetryFailedInstalls 'RetryFailedInstalls' $Defaults.RetryFailedInstalls)
@@ -199,10 +230,27 @@ $optEnvFilter  = Resolve-Setting $EnvironmentFilter  'EnvironmentFilter'  $Defau
 $optEnvExclude = Resolve-Setting $EnvironmentExclude 'EnvironmentExclude' $Defaults.EnvironmentExclude
 $optAppExclude = Resolve-Setting $AppExclude         'AppExclude'         $Defaults.AppExclude
 
-$optDoFinOps      = ConvertTo-Bool (Resolve-Overridable $UpdateFinOpsVersion 'UpdateFinOpsVersionOverride' 'UpdateFinOpsVersion' $Defaults.UpdateFinOpsVersion)
-$optFinOpsTarget  = Resolve-Overridable $FinOpsTargetVersion 'FinOpsTargetVersionOverride' 'FinOpsTargetVersion' $Defaults.FinOpsTargetVersion
-$optFinOpsEnvList = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnvironmentFilter' $Defaults.FinOpsEnvironmentFilter
-$optFinOpsDepTypes= Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
+# Finance and Operations: ONE switch.
+# Precedence: queue-time override, then library variable, then false.
+$optDoApply = ConvertTo-Bool (Resolve-Overridable $FinOpsApplyVersion 'FinOpsApplyVersionOverride' 'FinOpsApplyVersion' $Defaults.FinOpsApplyVersion)
+
+$optFinOpsTarget   = Resolve-Overridable $FinOpsTargetVersion 'FinOpsTargetVersionOverride' 'FinOpsTargetVersion' $Defaults.FinOpsTargetVersion
+$optFinOpsEnvList  = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnvironmentFilter' $Defaults.FinOpsEnvironmentFilter
+$optFinOpsDepTypes = Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
+
+# Retired variables. If either is still sitting in a variable group, say so
+# once so nobody believes it is still doing something.
+$optRetiredVars = @()
+foreach ($retired in @('UpdateFinOpsVersion','FinOpsInventory')) {
+    $rv = [Environment]::GetEnvironmentVariable($retired)
+    if ((Get-OrDefault $rv '__unset__') -ne '__unset__') { $optRetiredVars += $retired }
+}
+
+# The Finance and Operations phase uses Invoke-WebRequest -SkipHttpErrorCheck,
+# which is PowerShell 7 only. Phase 1 runs fine on 5.1.
+$optPs7      = ($PSVersionTable.PSVersion.Major -ge 7)
+$optDoFinOps = $true
+if (-not $optPs7) { $optDoFinOps = $false; $optDoApply = $false }
 
 $Config = [ordered]@{
     Authority               = $cfgAuthority
@@ -213,8 +261,6 @@ $Config = [ordered]@{
     PpApiRoot               = $cfgPpRoot.TrimEnd('/')
     AppManagementApiVersion = $cfgAppMgmtVer
     FinOpsApiVersion        = $cfgFinOpsVer
-    PollIntervalSec         = $cfgPollSec
-    PollTimeoutMin          = $cfgPollMin
 }
 
 function Get-Token {
@@ -227,6 +273,9 @@ function Get-Token {
 }
 
 # Status-aware call. Never throws on an HTTP error.
+# Status is the real HTTP status code. A request that never produced a
+# response (DNS, TLS, timeout, unsupported parameter) is reported with
+# Transport = $true rather than a fake status code.
 function Invoke-PpRest {
     param(
         [string] $Method = 'GET',
@@ -234,8 +283,9 @@ function Invoke-PpRest {
         [Parameter(Mandatory)] [hashtable] $Headers,
         [string] $Body = ''
     )
-    $status = 0
-    $text   = ''
+    $status    = 0
+    $text      = ''
+    $transport = $false
     try {
         $p = @{ Method = $Method; Uri = $RequestUri; Headers = $Headers; SkipHttpErrorCheck = $true; ErrorAction = 'Stop' }
         if ($Body -ne '') { $p['Body'] = $Body; $p['ContentType'] = 'application/json' }
@@ -244,16 +294,17 @@ function Invoke-PpRest {
         if ($null -ne $r.Content) { $text = [string]$r.Content }
     }
     catch {
-        $status = -1
+        $transport = $true
         $text = (Get-ErrorText -ErrorRecord $_)
     }
+
     $json = $null
     if ($text -ne '') {
         $t = $text.Trim()
         $i = $t.IndexOfAny([char[]]@('{','['))
         if ($i -ge 0) { try { $json = $t.Substring($i) | ConvertFrom-Json } catch { $json = $null } }
     }
-    return [pscustomobject]@{ Status = $status; Text = $text; Json = $json }
+    return [pscustomobject]@{ Status = $status; Text = $text; Json = $json; Transport = $transport }
 }
 
 # Returns the API error code when present, for factual reporting.
@@ -264,6 +315,21 @@ function Get-ApiErrorCode {
     if ($Response.Json -and $Response.Json.error -and $Response.Json.error.code) { return [string]$Response.Json.error.code }
     if ($Response.Text -and ([string]$Response.Text) -match 'does not match any known API routes') { return 'RouteNotFound' }
     return ''
+}
+
+# One consistent sentence for a failed call, whether it failed at the
+# transport layer or returned an HTTP error status.
+function Format-RestFailure {
+    param([string] $Leaf, $Response)
+    if ($null -eq $Response) { return "$Leaf failed with no response object." }
+    if ($Response.Transport) {
+        $detail = [string]$Response.Text
+        if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) + '...' }
+        return "$Leaf request failed before any HTTP response was received. $detail"
+    }
+    $codeText = Get-ApiErrorCode -Response $Response
+    if ($codeText -ne '') { return "$Leaf returned HTTP $($Response.Status) ($codeText)." }
+    return "$Leaf returned HTTP $($Response.Status)."
 }
 
 function New-PpUrl {
@@ -293,9 +359,11 @@ function Get-SolutionVersionMap {
         'OData-MaxVersion' = '4.0'
         'OData-Version'    = '4.0'
     }
+
     if ((Get-Count $DumpHints) -gt 0) {
         Write-Host '##[group]DIAGNOSTIC: managed solutions matching hints (uniquename | friendlyname | version)'
     }
+
     $map = @{}
     $url = "$base/api/data/v9.2/solutions?`$select=uniquename,friendlyname,version&`$filter=ismanaged eq true&`$top=5000"
     while ($url) {
@@ -311,13 +379,14 @@ function Get-SolutionVersionMap {
                 $hay = "$($s.uniquename) $($s.friendlyname)".ToLower()
                 foreach ($h in $DumpHints) {
                     if ($hay -like "*$($h.ToLower())*") {
-                        Write-Host (" [solution] {0} | {1} | {2}" -f $s.uniquename, $s.friendlyname, $s.version); break
+                        Write-Host ("  [solution] {0} | {1} | {2}" -f $s.uniquename, $s.friendlyname, $s.version); break
                     }
                 }
             }
         }
         $url = $resp.'@odata.nextLink'
     }
+
     if ((Get-Count $DumpHints) -gt 0) { Write-Host '##[endgroup]' }
     return $map
 }
@@ -350,6 +419,9 @@ function Resolve-InstalledVersion {
     return $null
 }
 
+# Matching order: exact, then wildcard when the needle contains '*', then
+# substring. Substring is deliberately last and is the loosest form; a short
+# needle will match broadly. See docs/parameters.md.
 function Test-AppExcluded {
     param($Pkg, $List)
     if ((Get-Count $List) -eq 0) { return $false }
@@ -487,6 +559,7 @@ $excludeList = Split-List $optEnvExclude
 $appExcludeL = Split-List $optAppExclude
 $foFilterL   = Split-List $optFinOpsEnvList
 $foDepTypesL = Split-List $optFinOpsDepTypes
+
 $appSolutionAlias = @{}
 
 Write-Section 'Effective settings'
@@ -499,15 +572,37 @@ Write-Host ("  UsePacFallback          : " + $optUsePac)
 Write-Host ("  EnvironmentFilter       : " + (Format-Scope -Raw $optEnvFilter  -EmptyLabel '(all)'))
 Write-Host ("  EnvironmentExclude      : " + (Format-Scope -Raw $optEnvExclude -EmptyLabel '(none)'))
 Write-Host ("  AppExclude              : " + (Format-Scope -Raw $optAppExclude -EmptyLabel '(none)'))
-Write-Host ("  UpdateFinOpsVersion     : " + $optDoFinOps)
-if ($optDoFinOps) {
+Write-Host ("  FinOpsApplyVersion      : " + $optDoApply)
+Write-Host ("  FinOpsApiVersion        : " + $Config.FinOpsApiVersion)
+Write-Host ("  FinOpsEnvironmentFilter : " + (Format-Scope -Raw $optFinOpsEnvList -EmptyLabel '(all detected F&O environments)'))
+if ($optDoApply) {
     $tgtLabel = '(latest available)'
     if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
-    Write-Host ("  FinOpsApiVersion        : " + $Config.FinOpsApiVersion)
     Write-Host ("  FinOpsTargetVersion     : " + $tgtLabel)
-    Write-Host ("  FinOpsEnvironmentFilter : " + (Format-Scope -Raw $optFinOpsEnvList -EmptyLabel '(all detected F&O environments)'))
     Write-Host ("  FinOpsDeploymentTypes   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
-    Write-Host '  Note: LCS managed environments are inventoried but not version-updated.'
+}
+Write-Host '  Note: F&O inventory always runs and is read-only.'
+Write-Host '  Note: LCS managed environments are inventoried but never version-updated.'
+
+# Notices come after the settings block, so they never split it in the log.
+if ((Get-Count $optRetiredVars) -gt 0) {
+    Write-Host ''
+    Write-Warning ("These variables no longer exist and are ignored: " + (Join-Names $optRetiredVars) + ".")
+    Write-Warning 'Finance and Operations has a single switch: finOpsApplyVersion. Inventory always runs and is read-only.'
+    Write-Warning 'Remove the retired variables from the variable group to silence this message.'
+}
+
+if (-not $optPs7) {
+    Write-Host ''
+    Write-Warning 'The Finance and Operations phase requires PowerShell 7 and will be skipped.'
+    Write-Warning "Detected PowerShell $($PSVersionTable.PSVersion). Run the pipeline task with pwsh: true."
+}
+
+if ($optDoApply) {
+    Write-Host ''
+    Write-Host '##[warning]Finance and Operations version apply is ENABLED by finOpsApplyVersion = true.'
+    Write-Host '##[warning]Eligible environments will be moved to a new application version.'
+    Write-Host '##[warning]This is a long-running operation and affects availability.'
 }
 
 Write-Section 'Authenticating'
@@ -603,7 +698,7 @@ foreach ($envObj in $environments) {
                 $iv = Resolve-InstalledVersion $c $solMap $appSolutionAlias
                 $ivText = '<no matching solution>'
                 if ($iv) { $ivText = $iv }
-                Write-Host (" - {0} [{1}]  installed: {2}  available: {3}" -f $c.localizedName, $c.uniqueName, $ivText, $c.version)
+                Write-Host ("  - {0} [{1}]  installed: {2}  available: {3}" -f $c.localizedName, $c.uniqueName, $ivText, $c.version)
             }
         }
         Write-Host '##[endgroup]'
@@ -669,28 +764,31 @@ foreach ($envObj in $environments) {
 
     if ($optDumpDiag -and (Get-Count $noMatchNames) -gt 0) {
         Write-Host '##[group]Apps with no matching managed solution (not evaluated for update)'
-        foreach ($nm in $noMatchNames) { Write-Host " - $nm" }
+        foreach ($nm in $noMatchNames) { Write-Host "  - $nm" }
         Write-Host '##[endgroup]'
     }
+
     Write-Host ''
     Write-Host "Environment summary -> updates: $envUpdates | failed-retries: $envRetries | up-to-date: $envUpToDate | no solution match: $envNoMatch | app-excluded: $envExcluded | manual: $envManual"
 }
 
-# ======= PHASE 2: Finance and Operations inventory and version update =======
+# ======= PHASE 2: Finance and Operations inventory and version apply =======
+#
+# Inventory always runs and is read-only.
+# Version apply runs only when FinOpsApplyVersion is true AND the deployment
+# type is eligible.
 #
 # Every F&O environment is probed individually. Nothing is assumed from the
 # result of another environment. Reporting states what the API returned.
-#
-# Version apply is attempted only for eligible deployment types. LCS managed
-# environments are inventoried but never version-updated here, because their
-# application updates are driven through Lifecycle Services.
-$foInventory   = @()
-$foChecked     = 0
-$foApplied     = 0
-$foFailed      = 0
-$foPropsFailed = 0
-$foNotEligible = 0
-$foNoVersions  = 0
+
+$foInventory    = @()
+$foChecked      = 0
+$foApplied      = 0
+$foFailed       = 0
+$foPropsFailed  = 0
+$foNotEligible  = 0
+$foNoVersions   = 0
+$foRouteMissing = 0
 
 if ($optDoFinOps) {
     try {
@@ -711,11 +809,18 @@ if ($optDoFinOps) {
             Write-Host 'No Finance and Operations environments to process.'
         }
         else {
-            $tgtLabel = '(latest available)'
-            if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
             Write-Host ("Environments to inspect     : " + (Get-Count $foTargets))
-            Write-Host ("Target version              : " + $tgtLabel)
-            Write-Host ("Eligible deployment types   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+            if ($optDoApply) {
+                $tgtLabel = '(latest available)'
+                if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
+                Write-Host ("Mode                        : inventory + version apply")
+                Write-Host ("Target version              : " + $tgtLabel)
+                Write-Host ("Eligible deployment types   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+            }
+            else {
+                Write-Host ("Mode                        : inventory only (read-only)")
+                Write-Host  "Version apply               : off (set finOpsApplyVersion = true to enable)"
+            }
             Write-Host 'Each environment is probed separately. Nothing is assumed from another.'
 
             foreach ($envObj in $foTargets) {
@@ -726,25 +831,18 @@ if ($optDoFinOps) {
                 Write-Host ''
                 Write-Host ('##[group]F&O: ' + $envNameFo)
 
-                # ---------- Inventory ----------
+                # ---------- Inventory (also supplies data the apply needs) ----------
                 $propUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsproperties'
                 $pr = Invoke-PpRest -Method 'GET' -RequestUri $propUri -Headers $ppHeaders
-
-                if ($pr.Status -lt 200 -or $pr.Status -ge 300) {
+                if ($pr.Transport -or $pr.Status -lt 200 -or $pr.Status -ge 300) {
                     $foPropsFailed++
-                    $codeText = Get-ApiErrorCode -Response $pr
-                    if ($codeText -ne '') {
-                        Write-Host ('  finopsproperties returned HTTP ' + $pr.Status + ' (' + $codeText + ').')
-                    } else {
-                        Write-Host ('  finopsproperties returned HTTP ' + $pr.Status + '.')
-                    }
+                    Write-Host ('  ' + (Format-RestFailure -Leaf 'finopsproperties' -Response $pr))
                     Write-Host '##[endgroup]'
                     continue
                 }
 
                 $curVer = ''; $platVer = ''; $depType = ''
                 $aosInt = ''; $aosBatch = ''; $demo = ''; $sched = @()
-
                 if ($pr.Json) {
                     if ($pr.Json.applicationVersion) { $curVer  = [string]$pr.Json.applicationVersion }
                     if ($pr.Json.platformVersion)    { $platVer = [string]$pr.Json.platformVersion }
@@ -768,7 +866,17 @@ if ($optDoFinOps) {
                 if ((Get-Count $sched) -gt 0) { Write-Host ('  Scheduled actions   : ' + (Get-Count $sched)) }
                 else { Write-Host '  Scheduled actions   : none' }
 
-                $rowNote = ''
+                $rowNote = 'inventory only'
+
+                # ---------- Stop here when version apply is off ----------
+                if (-not $optDoApply) {
+                    $foInventory += [pscustomobject]@{
+                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
+                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                    }
+                    Write-Host '##[endgroup]'
+                    continue
+                }
 
                 # ---------- Eligibility by deployment type ----------
                 $eligible = $true
@@ -800,27 +908,26 @@ if ($optDoFinOps) {
                 # ---------- Available versions (probed per environment) ----------
                 $verUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsversions'
                 $vr = Invoke-PpRest -Method 'GET' -RequestUri $verUri -Headers $ppHeaders
-
-                if ($vr.Status -lt 200 -or $vr.Status -ge 300) {
+                if ($vr.Transport -or $vr.Status -lt 200 -or $vr.Status -ge 300) {
                     $codeText = Get-ApiErrorCode -Response $vr
-                    if ($codeText -eq 'RouteNotFound') {
-                        $foNoVersions++
+                    if (-not $vr.Transport -and $codeText -eq 'RouteNotFound') {
+                        $foRouteMissing++
                         $rowNote = 'versions: RouteNotFound'
                         Write-Host '  finopsversions returned HTTP 404 RouteNotFound.'
                         Write-Host '  finopsproperties succeeded for this environment, so the token, the'
                         Write-Host '  environment id and the api-version are accepted. This specific route'
                         Write-Host '  did not resolve on this endpoint.'
                     }
-                    elseif ($vr.Status -eq 403) {
+                    elseif (-not $vr.Transport -and $vr.Status -eq 403) {
                         $foFailed++
                         $rowNote = 'versions: 403'
                         Write-Host '  finopsversions returned HTTP 403. The service principal lacks permission.'
                     }
                     else {
                         $foFailed++
-                        $rowNote = 'versions: HTTP ' + $vr.Status
-                        if ($codeText -ne '') { Write-Host ('  finopsversions returned HTTP ' + $vr.Status + ' (' + $codeText + ').') }
-                        else { Write-Host ('  finopsversions returned HTTP ' + $vr.Status + '.') }
+                        if ($vr.Transport) { $rowNote = 'versions: transport failure' }
+                        else { $rowNote = 'versions: HTTP ' + $vr.Status }
+                        Write-Host ('  ' + (Format-RestFailure -Leaf 'finopsversions' -Response $vr))
                     }
                     $foInventory += [pscustomobject]@{
                         Environment = $envNameFo; Application = $curVer; Platform = $platVer
@@ -882,22 +989,21 @@ if ($optDoFinOps) {
                 else {
                     $applyUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf ('finopsversions/' + [string]$target + '/apply')
                     $ar = Invoke-PpRest -Method 'POST' -RequestUri $applyUri -Headers $ppHeaders
-                    if ($ar.Status -eq 202) {
+                    if (-not $ar.Transport -and $ar.Status -eq 202) {
                         $foApplied++
                         $rowNote = 'applying ' + [string]$target
                         Write-Host ('  Accepted (202). Applying ' + [string]$target + '. Long-running operation.')
                         if ($ar.Json -and $ar.Json.operationId) { Write-Host ('  Operation id        : ' + [string]$ar.Json.operationId) }
                     }
-                    elseif ($ar.Status -eq 204) {
+                    elseif (-not $ar.Transport -and $ar.Status -eq 204) {
                         $rowNote = 'up to date (204)'
                         Write-Host '  No content (204). Already at or above the requested version.'
                     }
                     else {
                         $foFailed++
-                        $codeText = Get-ApiErrorCode -Response $ar
-                        $rowNote = 'apply: HTTP ' + $ar.Status
-                        if ($codeText -ne '') { Write-Host ('  Apply returned HTTP ' + $ar.Status + ' (' + $codeText + ').') }
-                        else { Write-Host ('  Apply returned HTTP ' + $ar.Status + '.') }
+                        if ($ar.Transport) { $rowNote = 'apply: transport failure' }
+                        else { $rowNote = 'apply: HTTP ' + $ar.Status }
+                        Write-Host ('  ' + (Format-RestFailure -Leaf 'apply' -Response $ar))
                     }
                 }
 
@@ -934,17 +1040,24 @@ Write-Host "App excluded (skipped):         $totalExcluded"
 Write-Host "Manual install required:        $totalManual"
 Write-Host "Failures/warnings:              $totalFailed"
 Write-Host "F&O environments detected:      $(Get-Count $finOpsDetected)"
+
 if ($optDoFinOps) {
     Write-Host "F&O environments inspected:     $foChecked"
     Write-Host "F&O inventory collected:        $(Get-Count $foInventory)"
     if ($foPropsFailed -gt 0) { Write-Host "F&O properties unavailable:     $foPropsFailed" }
-    Write-Host "Version apply skipped (type):   $foNotEligible"
-    Write-Host "No version list returned:       $foNoVersions"
-    Write-Host "F&O versions applied/planned:   $foApplied"
+    if ($optDoApply) {
+        Write-Host "Version apply skipped (type):   $foNotEligible"
+        Write-Host "Versions route unavailable:     $foRouteMissing"
+        Write-Host "Versions list empty (HTTP 200): $foNoVersions"
+        Write-Host "F&O versions applied/planned:   $foApplied"
+    }
+    else {
+        Write-Host "Version apply:                  off (set finOpsApplyVersion = true)"
+    }
     Write-Host "F&O failures:                   $foFailed"
 }
-elseif ((Get-Count $finOpsDetected) -gt 0) {
-    Write-Host "F&O phase:                      disabled (set updateFinOpsVersion = true)"
+else {
+    Write-Host "F&O phase:                      skipped (PowerShell 7 required)"
 }
 
 if ((Get-Count $manualList) -gt 0) {
@@ -957,6 +1070,5 @@ if ((Get-Count $manualList) -gt 0) {
 
 Write-Host ''
 Write-Host 'All environments processed'
-
 $global:LASTEXITCODE = 0
 exit 0
