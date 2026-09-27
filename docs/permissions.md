@@ -64,7 +64,7 @@ The Finance and Operations routes under `/dynamics/environments/{id}/` use the s
 This has been verified in practice: with an app-only (client credentials) token, `finopsproperties` returns HTTP 200 with full environment data, using the identical token that also succeeds against App Management.
 
 - If a Finance and Operations route returns **403 Forbidden**, revisit steps 2 and 3 above.
-- If it returns **404 RouteNotFound** while `finopsproperties` succeeds, that is a route availability issue on the endpoint rather than a permissions problem. This has been confirmed independently through both raw REST calls and Microsoft's own `pac dynamics` CLI, which construct and issue the identical request URL and receive the identical response. See the Finance and Operations section of the [README](../README.md).
+- If `finopsversions` returns **404 RouteNotFound** while `finopsproperties` succeeds on the same environment, same token, same api-version, this is **not** a permissions problem. It has been observed to be intermittent: the identical call on the identical environment can return RouteNotFound on one run and a genuine 200 with real version data on a later run, with no configuration change in between. Treat it as a normal platform condition and simply re-run; do not chase it as a permissions or configuration issue. See the Finance and Operations section of the [README](../README.md).
 
 ## PowerShell version
 
@@ -78,8 +78,7 @@ The Finance and Operations phase uses `Invoke-WebRequest -SkipHttpErrorCheck`, w
 | `Forbidden` on `scopes/admin/environments` | Layer 2 | `New-PowerAppManagementApp` |
 | Failed to read Dataverse solution versions for an environment | Layer 3 | Add the application user with a role in that environment |
 | 403 on a Finance and Operations route | Layer 2 or 3 | Re-check the management app registration, then the app user |
-| 404 `RouteNotFound` on `finopsversions` or its `apply` sub-route | Not a permissions issue | Route availability. See the README. |
-| 403 after an admin consent change | Consent not propagated | Re-grant admin consent, wait, retry |
+| 404 `RouteNotFound` on `finopsversions`, while `finopsproperties` succeeds | Not a permissions issue | Intermittent platform behaviour. Re-run. |
 | F&O phase skipped with a PowerShell version warning | Not a permissions issue | Run the task with `pwsh: true`, or use PowerShell 7 locally |
 
 ## Least privilege note
