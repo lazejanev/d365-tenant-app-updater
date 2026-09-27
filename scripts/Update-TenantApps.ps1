@@ -28,6 +28,17 @@
          releaseStage label on each version - see v2.4.0 notes.
 
 .NOTES
+    v2.4.1
+      - Wording only, no logic change. Scope-related messages now use
+        Microsoft's own public terminology: "PQU" (proactive quality
+        update) instead of the internal "QualityUpdate" enum value, and
+        "version update" instead of "VersionUpdate", via a small
+        Get-FinOpsScopeLabel helper. Every "[stage]" bracket in a headline
+        is now "[Status: stage]" for clarity, and the diagnostic line that
+        lists what is available is now labeled "New version available"
+        rather than the bare "Available". None of this affects the
+        releaseStage matching logic itself.
+
     v2.4.0
       - REMOVED all classification logic based on the F&O Provisioning App
         Anchor Solution (Get-FinOpsVersionChangeType, and every message
