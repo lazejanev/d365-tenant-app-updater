@@ -8,49 +8,55 @@
 #   Phase 1 always runs against every environment that passes
 #   environmentFilter / environmentExclude. While it inspects each
 #   environment it also records which ones have Finance and Operations
-#   installed, and the installed version of the F&O Provisioning App
-#   Anchor Solution (used later to classify update scope). No extra
-#   probing - this is read from data already being fetched.
+#   installed. The F&O Provisioning App Anchor Solution is deliberately
+#   excluded from Phase 1's generic install attempts - it always fails
+#   there with a Custom Install Experience response, and is exclusively
+#   owned by Phase 2's dedicated route.
 #
 #   Phase 2 - Finance and Operations:
-#     INVENTORY     always runs, read-only, no switch. Reports application
-#                   version, platform version, deployment type and AOS
-#                   counts per F&O environment, then prints a consolidated
-#                   table. It costs one GET per F&O environment and changes
-#                   nothing, so it is not worth gating.
+#     INVENTORY     always runs, read-only, no switch. Reports the LIVE
+#                   application version (finopsproperties, fetched fresh
+#                   every run), platform version, deployment type and AOS
+#                   counts per F&O environment.
 #     VERSION APPLY controlled by finOpsApplyVersion, default false. This
-#                   is the ONLY on/off switch in the F&O phase. It changes
-#                   the environment.
-#     UPDATE SCOPE  controlled by finOpsUpdateScope, default QualityUpdate.
-#                   finopsversions returns entries in the F&O named-release
-#                   scheme (e.g. "10.0.48.7", "10.0.49.2"), which can
-#                   include both an in-place patch on the CURRENT release
-#                   train (QualityUpdate, e.g. 10.0.48.6 -> 10.0.48.7 -
-#                   only the last segment differs) and an entirely new
-#                   release train (VersionUpdate, e.g. -> 10.0.49.2 - the
-#                   3rd segment differs). Selecting "highest available"
-#                   without this distinction was confirmed live to select
-#                   a full release-wave jump when a smaller same-train
-#                   patch was also available. finOpsUpdateScope restricts
-#                   which kind may be selected: QualityUpdate (default,
-#                   smallest/safest), VersionUpdate (opt into the new
-#                   release train), or Any (numerically highest,
-#                   regardless of kind - the pre-v2.3.3 behaviour).
+#                   is the ONLY on/off switch in the F&O phase and the
+#                   only way a version is ever applied. It changes the
+#                   environment.
+#     UPDATE SCOPE  controlled by finOpsUpdateScope, default QualityUpdate
+#                   (displayed as "PQU" in the log, matching Microsoft's
+#                   own terminology). Matched directly against Microsoft's
+#                   OWN releaseStage field on each version returned by
+#                   finopsversions - QualityUpdate selects only versions
+#                   staged QualityUpdate (a same-train patch);
+#                   VersionUpdate selects only versions staged anything
+#                   else (a new release train); Any ignores the stage and
+#                   picks the numerically highest.
+#                   IMPORTANT: this does NOT use the F&O Provisioning App
+#                   Anchor Solution for classification. That value was
+#                   confirmed live to be unreliable - ten environments
+#                   sharing the identical live application build reported
+#                   two different Anchor Solution readings in the same
+#                   run, because Microsoft's own automated Unified
+#                   environment service update rollout does not update
+#                   that Dataverse record (only a Dataverse-level solution
+#                   operation, such as a copy from an already-updated
+#                   source, does). The Anchor Solution value is still
+#                   shown as a diagnostic under DumpDiagnostics, but it is
+#                   never used to accept, reject, or classify anything.
 #
 #   Version apply is gated behind a live route check, so it begins working
 #   automatically once the finopsversions route is available. That is
 #   precisely why the on/off switch must be set explicitly: no default, no
 #   other variable and no platform change can turn it on.
 #
-# WHAT THE F&O ROUTES RETURN TODAY
-#   Verified on a westeurope tenant with an app-only token, reproduced
-#   independently via both raw REST calls and the `pac dynamics` CLI:
-#     GET  /dynamics/environments/{id}/finopsproperties           -> HTTP 200
-#     GET  /dynamics/environments/{id}/finopsversions              -> HTTP 200 (route now live)
-#     POST /dynamics/environments/{id}/finopsversions/{v}/apply   -> 202 / 204 per environment
-#   The script reports whatever the API returns and does not assert a
-#   cause. A RouteNotFound on finopsversions (if seen on a different
-#   endpoint) is not counted as a failure.
+# A NOTE ON THE finopsversions ROUTE
+#   This route has been observed to intermittently return HTTP 404
+#   RouteNotFound on some runs and a genuine 200 with real version data on
+#   others, for the SAME environment, SAME token, SAME api-version, with
+#   no configuration change in between. This is treated as a normal,
+#   expected platform condition, reported factually per environment, and
+#   is not counted as a script failure. If you see RouteNotFound, simply
+#   re-run; do not treat it as evidence of a code or configuration defect.
 #
 # CONFIGURATION MODEL
 #   Required variables in 'D365-TenantAppUpdater':
@@ -61,10 +67,10 @@
 #   Optional override variables:
 #     authority, bapApiRoot, bapApiVersion, powerPlatformScope, ppApiRoot,
 #     appManagementApiVersion, finOpsApiVersion, dumpDiagnostics,
-#     retryFailedInstalls, whatIf, usePacFallback, environmentFilter,
-#     environmentExclude, appExclude, finOpsApplyVersion,
-#     finOpsTargetVersion, finOpsEnvironmentFilter, finOpsDeploymentTypes,
-#     finOpsUpdateScope
+#     dumpSolutionCatalog, retryFailedInstalls, whatIf, usePacFallback,
+#     environmentFilter, environmentExclude, appExclude,
+#     finOpsApplyVersion, finOpsTargetVersion, finOpsEnvironmentFilter,
+#     finOpsDeploymentTypes, finOpsUpdateScope
 #
 #   Retired: updateFinOpsVersion and finOpsInventory. Both are ignored. If
 #   either is still in the variable group the script says so once in the
@@ -117,7 +123,7 @@ parameters:
       - 'false'
 
   - name: finOpsUpdateScope
-    displayName: 'F&O update scope (QualityUpdate = same train patch, VersionUpdate = new release train, Any = highest regardless)'
+    displayName: 'F&O update scope (QualityUpdate = PQU/same-train patch, VersionUpdate = new release train, Any = highest regardless)'
     type: string
     default: useLibraryOrDefault
     values:
@@ -204,6 +210,7 @@ stages:
               AppManagementApiVersion: $(appManagementApiVersion)
               FinOpsApiVersion:        $(finOpsApiVersion)
               DumpDiagnostics:         $(dumpDiagnostics)
+              DumpSolutionCatalog:     $(dumpSolutionCatalog)
               RetryFailedInstalls:     $(retryFailedInstalls)
               EnvironmentFilter:       $(environmentFilter)
               EnvironmentExclude:      $(environmentExclude)
@@ -216,11 +223,11 @@ stages:
               WhatIfOverride:              $(whatIfOverride)
               UsePacFallback:              $(usePacFallback)
               UsePacFallbackOverride:      $(usePacOverride)
-              # The single Finance and Operations ON/OFF switch. Default false.
+              # The single Finance and Operations on/off switch. Default false.
               FinOpsApplyVersion:          $(finOpsApplyVersion)
               FinOpsApplyVersionOverride:  $(finOpsApplyOverride)
               # Restricts WHICH kind of update apply may select. Default
-              # QualityUpdate (same release train patch only).
+              # QualityUpdate (displayed as "PQU" in the log).
               FinOpsUpdateScope:           $(finOpsUpdateScope)
               FinOpsUpdateScopeOverride:   $(finOpsUpdateScopeOverride)
               FinOpsTargetVersion:         $(finOpsTargetVersion)
