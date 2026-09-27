@@ -8,7 +8,9 @@
 #   Phase 1 always runs against every environment that passes
 #   environmentFilter / environmentExclude. While it inspects each
 #   environment it also records which ones have Finance and Operations
-#   installed. No extra probing.
+#   installed, and the installed version of the F&O Provisioning App
+#   Anchor Solution (used later to classify update scope). No extra
+#   probing - this is read from data already being fetched.
 #
 #   Phase 2 - Finance and Operations:
 #     INVENTORY     always runs, read-only, no switch. Reports application
@@ -17,24 +19,38 @@
 #                   table. It costs one GET per F&O environment and changes
 #                   nothing, so it is not worth gating.
 #     VERSION APPLY controlled by finOpsApplyVersion, default false. This
-#                   is the ONLY switch in the F&O phase and the only way a
-#                   version is ever applied. It changes the environment.
+#                   is the ONLY on/off switch in the F&O phase. It changes
+#                   the environment.
+#     UPDATE SCOPE  controlled by finOpsUpdateScope, default QualityUpdate.
+#                   finopsversions returns entries in the F&O named-release
+#                   scheme (e.g. "10.0.48.7", "10.0.49.2"), which can
+#                   include both an in-place patch on the CURRENT release
+#                   train (QualityUpdate, e.g. 10.0.48.6 -> 10.0.48.7 -
+#                   only the last segment differs) and an entirely new
+#                   release train (VersionUpdate, e.g. -> 10.0.49.2 - the
+#                   3rd segment differs). Selecting "highest available"
+#                   without this distinction was confirmed live to select
+#                   a full release-wave jump when a smaller same-train
+#                   patch was also available. finOpsUpdateScope restricts
+#                   which kind may be selected: QualityUpdate (default,
+#                   smallest/safest), VersionUpdate (opt into the new
+#                   release train), or Any (numerically highest,
+#                   regardless of kind - the pre-v2.3.3 behaviour).
 #
 #   Version apply is gated behind a live route check, so it begins working
 #   automatically once the finopsversions route is available. That is
-#   precisely why it must be set explicitly: no default, no other variable
-#   and no platform change can turn it on.
+#   precisely why the on/off switch must be set explicitly: no default, no
+#   other variable and no platform change can turn it on.
 #
 # WHAT THE F&O ROUTES RETURN TODAY
 #   Verified on a westeurope tenant with an app-only token, reproduced
 #   independently via both raw REST calls and the `pac dynamics` CLI:
 #     GET  /dynamics/environments/{id}/finopsproperties           -> HTTP 200
-#     GET  /dynamics/environments/{id}/finopsversions              -> HTTP 404 RouteNotFound
-#     POST /dynamics/environments/{id}/finopsversions/{v}/apply   -> HTTP 404 RouteNotFound
-#   The sibling route succeeds on the identical call shape, so the token,
-#   the environment id and the api-version are accepted. The script reports
-#   whatever the API returns and does not assert a cause. A RouteNotFound on
-#   finopsversions is not counted as a failure.
+#     GET  /dynamics/environments/{id}/finopsversions              -> HTTP 200 (route now live)
+#     POST /dynamics/environments/{id}/finopsversions/{v}/apply   -> 202 / 204 per environment
+#   The script reports whatever the API returns and does not assert a
+#   cause. A RouteNotFound on finopsversions (if seen on a different
+#   endpoint) is not counted as a failure.
 #
 # CONFIGURATION MODEL
 #   Required variables in 'D365-TenantAppUpdater':
@@ -47,7 +63,8 @@
 #     appManagementApiVersion, finOpsApiVersion, dumpDiagnostics,
 #     retryFailedInstalls, whatIf, usePacFallback, environmentFilter,
 #     environmentExclude, appExclude, finOpsApplyVersion,
-#     finOpsTargetVersion, finOpsEnvironmentFilter, finOpsDeploymentTypes
+#     finOpsTargetVersion, finOpsEnvironmentFilter, finOpsDeploymentTypes,
+#     finOpsUpdateScope
 #
 #   Retired: updateFinOpsVersion and finOpsInventory. Both are ignored. If
 #   either is still in the variable group the script says so once in the
@@ -99,8 +116,18 @@ parameters:
       - 'true'
       - 'false'
 
+  - name: finOpsUpdateScope
+    displayName: 'F&O update scope (QualityUpdate = same train patch, VersionUpdate = new release train, Any = highest regardless)'
+    type: string
+    default: useLibraryOrDefault
+    values:
+      - useLibraryOrDefault
+      - 'QualityUpdate'
+      - 'VersionUpdate'
+      - 'Any'
+
   - name: finOpsTargetVersion
-    displayName: 'F&O target version (blank = latest available)'
+    displayName: 'F&O target version (blank = highest matching scope)'
     type: string
     default: ' '
 
@@ -132,6 +159,8 @@ variables:
     value: ${{ replace(parameters.usePacFallback, 'useLibraryOrDefault', '') }}
   - name: finOpsApplyOverride
     value: ${{ replace(parameters.finOpsApplyVersion, 'useLibraryOrDefault', '') }}
+  - name: finOpsUpdateScopeOverride
+    value: ${{ replace(parameters.finOpsUpdateScope, 'useLibraryOrDefault', '') }}
 
 stages:
   - stage: UpdateApps
@@ -187,9 +216,13 @@ stages:
               WhatIfOverride:              $(whatIfOverride)
               UsePacFallback:              $(usePacFallback)
               UsePacFallbackOverride:      $(usePacOverride)
-              # The single Finance and Operations switch. Default false.
+              # The single Finance and Operations ON/OFF switch. Default false.
               FinOpsApplyVersion:          $(finOpsApplyVersion)
               FinOpsApplyVersionOverride:  $(finOpsApplyOverride)
+              # Restricts WHICH kind of update apply may select. Default
+              # QualityUpdate (same release train patch only).
+              FinOpsUpdateScope:           $(finOpsUpdateScope)
+              FinOpsUpdateScopeOverride:   $(finOpsUpdateScopeOverride)
               FinOpsTargetVersion:         $(finOpsTargetVersion)
               FinOpsTargetVersionOverride: ${{ parameters.finOpsTargetVersion }}
               # Retired. Passed only so the script can warn if they are still
