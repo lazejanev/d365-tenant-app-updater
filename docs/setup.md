@@ -80,8 +80,10 @@ There is a single on/off variable, `finOpsApplyVersion` (default `false`), plus 
 No configuration needed. It runs on every pipeline execution, for every environment where Finance and Operations is installed, regardless of `finOpsApplyVersion`. Per environment, the log shows one compact line, for example:
 
 ```
-TPM-DEV04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
+Dev04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
 ```
+
+> The environment name above is an illustrative placeholder. Your own log will show your actual environment display names.
 
 Expand the environment's collapsible group to see additional detail: AOS counts, demo dataset, and the F&O Provisioning App Anchor Solution version (shown for reference only - see the note below on why it is never used to make a decision).
 
@@ -109,7 +111,7 @@ Optional refinements, all inert unless `finOpsApplyVersion = true`:
 
 ### Why the F&O Provisioning App Anchor Solution is not used to decide anything
 
-An earlier version of this project used the Anchor Solution's Dataverse-registered version as the reference point for classifying available updates. This was confirmed live to be unreliable: ten environments sharing the **identical** live application build reported **two different** Anchor Solution readings in the same run. The reason is structural: Microsoft's own automated Unified environment service update rollout does not update that Dataverse record; only a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import) does. So an environment updated the normal way can carry a stale Anchor Solution version indefinitely, while its live application build is completely current.
+An earlier version of this project used the Anchor Solution's Dataverse-registered version as the reference point for classifying available updates. This was confirmed live to be unreliable: multiple environments sharing the **identical** live application build reported **different** Anchor Solution readings in the same run. The reason is structural: Microsoft's own automated Unified environment service update rollout does not update that Dataverse record; only a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import) does. So an environment updated the normal way can carry a stale Anchor Solution version indefinitely, while its live application build is completely current.
 
 The fix was to stop deriving classification from that value entirely, and instead match directly against Microsoft's own `releaseStage` label on each version. The Anchor Solution value is still shown, under `dumpDiagnostics`, purely as a labeled reference - never as the basis for a decision.
 
