@@ -71,7 +71,7 @@ The F&O phase has **one on/off switch** (`finOpsApplyVersion`) and **one scope c
 | `VersionUpdate` (shown as **version update**) | Only versions staged anything other than `QualityUpdate` — a new release train, with schema and feature changes. |
 | `Any` | Every version returned, ignoring `releaseStage`; the numerically highest is selected. This is the only mode where a full release-wave jump can be selected as the default target. |
 
-**Important: this does not use the F&O Provisioning App Anchor Solution for classification, by design.** An earlier version of this script did, and it was confirmed live to be unreliable: ten environments sharing the identical live application build reported two different Anchor Solution values in the same run. The reason is structural, not a timing issue — the Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import), and is **not** touched by Microsoft's own automated Unified environment service update rollout, which is how these environments are actually updated in normal operation. Using it as a classification reference would have meant scope decisions were sometimes made against a value that did not reflect the environment's real state.
+**Important: this does not use the F&O Provisioning App Anchor Solution for classification, by design.** An earlier version of this script did, and it was confirmed live to be unreliable: multiple environments sharing the identical live application build reported different Anchor Solution values in the same run. The reason is structural, not a timing issue — the Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import), and is **not** touched by Microsoft's own automated Unified environment service update rollout, which is how these environments are actually updated in normal operation. Using it as a classification reference would have meant scope decisions were sometimes made against a value that did not reflect the environment's real state.
 
 The Anchor Solution's version is still shown, under `dumpDiagnostics`, as a single labeled diagnostic line — never in a decision-making headline, and never used to accept, reject, or classify anything.
 
@@ -182,7 +182,9 @@ Nothing to configure. This is the default. `finOpsApplyVersion` is `false`, so y
 
 - `finOpsApplyVersion = true`
 - `finOpsUpdateScope = QualityUpdate` (the default; can be omitted)
-- `finOpsEnvironmentFilter = TPM-DEV01, TPM-DEV02, TPM-DEV03`
+- `finOpsEnvironmentFilter = Dev01, Dev02, Dev03`
+
+> Environment names above are illustrative placeholders. Substitute your own environment display names or ids.
 
 Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only when a version staged `QualityUpdate` is actually offered for that environment. If Microsoft has not shipped a same-train patch since the environment's current version, this correctly reports "no PQU version available" rather than applying anything.
 
