@@ -153,8 +153,10 @@ Two variables govern this phase: `finOpsApplyVersion` (the only on/off switch, d
 For every detected F&O environment the pipeline reports a single compact line, for example:
 
 ```
-TPM-DEV04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
+Dev04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
 ```
+
+> Environment names above (`Dev01`, `Dev02`, ...) are illustrative placeholders. Your own log will show your actual environment display names.
 
 Expand the environment's group to see AOS counts, demo dataset, and the F&O Provisioning App Anchor Solution version (shown for reference only). This runs every time, regardless of `finOpsApplyVersion`.
 
@@ -168,7 +170,7 @@ Expand the environment's group to see AOS counts, demo dataset, and the F&O Prov
 | `VersionUpdate` | **version update** | Only a move to a new release train. |
 | `Any` | - | The numerically highest version, ignoring stage. |
 
-**This does not use the F&O Provisioning App Anchor Solution to classify anything**, and that is a deliberate, hard-won correction. An earlier version did, and it was confirmed live to be unreliable: ten environments sharing the identical live application build reported two different Anchor Solution readings in the same pipeline run. The reason is structural - Microsoft's own automated Unified environment service update rollout does not touch that Dataverse record; only a Dataverse-level solution operation (an environment copy, or an explicit solution import) does. Since the platform already labels each version's `releaseStage` itself, there was never a need for this script to derive that classification from a value that can silently drift from reality.
+**This does not use the F&O Provisioning App Anchor Solution to classify anything**, and that is a deliberate, hard-won correction. An earlier version did, and it was confirmed live to be unreliable: multiple environments sharing the identical live application build reported different Anchor Solution readings in the same pipeline run. The reason is structural - Microsoft's own automated Unified environment service update rollout does not touch that Dataverse record; only a Dataverse-level solution operation (an environment copy, or an explicit solution import) does. Since the platform already labels each version's `releaseStage` itself, there was never a need for this script to derive that classification from a value that can silently drift from reality.
 
 ### Why apply is a single, off-by-default switch
 
