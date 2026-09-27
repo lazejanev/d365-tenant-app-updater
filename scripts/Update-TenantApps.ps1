@@ -9,65 +9,89 @@
       Discovers every Dataverse environment, reads available application
       packages, reads installed versions from Dataverse managed solutions,
       and installs updates where a strictly newer version exists.
+      The Finance and Operations Provisioning App Anchor Solution is
+      EXCLUDED from this phase's install attempts (always rejected by the
+      generic App Management API; exclusively owned by Phase 2).
 
     Phase 2 - Finance and Operations
-      a. INVENTORY - always runs, read-only, no switch. Reports application
-         version, platform version, deployment type, AOS counts, demo
-         dataset and scheduled actions for every environment where F&O is
-         installed, then prints a consolidated table. It costs one GET per
-         F&O environment and changes nothing, so it is not worth gating.
+      a. INVENTORY - always runs, read-only, no switch. Reports the live
+         application version (finopsproperties, fetched fresh every run),
+         platform version, deployment type, and AOS counts for every
+         environment where F&O is installed.
       b. VERSION APPLY - controlled by FinOpsApplyVersion, default false.
-         This is the ONLY switch in the Finance and Operations phase, and
-         the only way a version is ever applied. It changes the
-         environment. Only eligible deployment types are considered. LCS
-         managed environments (LCSSandbox, LCSProduction) are deliberately
-         excluded because their application updates are driven through
-         Lifecycle Services, not the Power Platform API.
-
-      Version apply is gated behind a live route check, so it begins
-      working automatically once the finopsversions route is available on
-      an endpoint. That is exactly why it must be set explicitly: nothing
-      else - no default, no legacy variable, no platform change - can turn
-      it on.
+         The ONLY switch in this phase. Changes the environment. Only
+         eligible deployment types are considered. LCS managed
+         environments are excluded (updated via Lifecycle Services, not
+         this API).
+         FinOpsUpdateScope (default QualityUpdate) restricts which KIND of
+         available version may be selected, using Microsoft's own
+         releaseStage label on each version - see v2.4.0 notes.
 
 .NOTES
+    v2.4.0
+      - REMOVED all classification logic based on the F&O Provisioning App
+        Anchor Solution (Get-FinOpsVersionChangeType, and every message
+        that referenced "Anchor Solution" as a basis for a decision).
+        Confirmed live, across ten environments in one run: every one of
+        them shares the IDENTICAL live application build (10.0.2645.136),
+        yet their Anchor Solution readings split into two different, wrong
+        values (10.0.48.6 and 10.0.48.7). This is not a timing lag - it is
+        that the Anchor Solution's version in Dataverse is only set when a
+        Dataverse-level solution operation touches it (an environment copy
+        from an already-updated source, or an explicit solution import),
+        and is NOT updated by Microsoft's own automated Unified
+        environment service update rollout, which is how these
+        environments actually get updated in practice. The Anchor Solution
+        was therefore never a safe basis for deciding what kind of update
+        is available, and this script no longer uses it for that purpose
+        at all.
+      - REPLACED it with Microsoft's own releaseStage field, present on
+        every entry returned by finopsversions (confirmed in a raw
+        response captured earlier this session: {"version":"10.0.48.7",
+        "releaseStage":"QualityUpdate"}, alongside a second entry staged
+        "GeneralAvailability"). This field is the platform's own
+        classification of each version, computed against the environment's
+        true live state - there is nothing left for this script to derive
+        or guess. FinOpsUpdateScope now matches directly against it:
+          QualityUpdate  -> only versions staged QualityUpdate
+          VersionUpdate  -> only versions NOT staged QualityUpdate
+          Any            -> every version, ignoring stage
+      - REWROTE all Finance and Operations log output to be dramatically
+        shorter, in direct response to feedback that the previous format
+        repeated the same explanatory sentence in full on every single
+        environment line, making 13 environments unreadable at a glance.
+        Explanatory text now appears ONCE, in a short legend printed at
+        the start of the Finance and Operations section. Per-environment
+        output is now one compact headline (also the collapsible group's
+        label, so it is visible even collapsed) with no repeated prose.
+      - The Anchor Solution figure is still shown, but only as a single,
+        clearly-labeled, non-decisive diagnostic value under
+        DumpDiagnostics, never in a headline, and never used to accept,
+        reject, or classify anything.
+
+    v2.3.9 (superseded by v2.4.0 above)
+      - Had kept the Anchor Solution as the classification reference,
+        merely labeling it as "can lag". Live data now shows the problem
+        is structural, not a lag, for environments updated by Microsoft's
+        own automated rollout rather than a Dataverse solution operation -
+        so labeling it as potentially stale was insufficient; it needed to
+        be removed from the decision path entirely.
+
+    v2.3.8
+      - Collapsible ##[group] per environment, with the group's label set
+        to the headline so Azure DevOps shows the outcome even collapsed.
+
+    v2.3.5
+      - The F&O Provisioning App Anchor Solution is excluded from Phase
+        1's generic install loop (it is exclusively owned by Phase 2).
+
+    v2.3.1
+      - The apply call's own response (202/204) is the sole authority on
+        whether an apply is needed. No client-side pre-check of any kind.
+
     v2.3.0
-      - FinOpsApplyVersion is the single Finance and Operations variable.
-        Inventory always runs and is read-only. There is no separate switch
-        for it, and no legacy alias. If a variable named FinOpsInventory or
-        UpdateFinOpsVersion is present in the environment, it is ignored
-        and the script says so once in the log.
-      - PollIntervalSec and PollTimeoutMin removed. They were resolved but
-        never read; no polling loop existed. Rather than keep dead settings
-        that the documentation described as real behaviour, they are gone.
-        Install completion polling may return once the operation status
-        route is confirmed against a live endpoint.
-      - Transport failures are now reported as transport failures instead of
-        being rendered as "HTTP -1".
-      - The Finance and Operations phase requires PowerShell 7. On Windows
-        PowerShell 5.1 it is skipped with a clear message instead of failing
-        obscurely inside Invoke-WebRequest.
-
-    v2.2.0
-      - Every environment is probed individually. An earlier build stopped
-        after the first RouteNotFound and assumed the rest would behave the
-        same, which hid per deployment type differences. A 404 over REST
-        costs about 25 ms, so probing all of them is effectively free.
-      - Reporting is factual. The script states what the API returned
-        (for example RouteNotFound) rather than asserting a cause.
-      - FinOpsDeploymentTypes controls which deployment types are eligible
-        for a version apply. Default excludes LCS managed environments.
-
-    Verified against a live tenant (westeurope, app-only token), reproduced
-    independently via both raw REST calls and the `pac dynamics` CLI:
-      GET  /dynamics/environments/{id}/finopsproperties            -> HTTP 200
-      GET  /dynamics/environments/{id}/finopsversions               -> HTTP 404 RouteNotFound
-      POST /dynamics/environments/{id}/finopsversions/{v}/apply     -> HTTP 404 RouteNotFound
-    finopsproperties succeeding on the identical token, environment id and
-    api-version rules out auth, tenant and environment id as the cause.
-    The versions route and its apply sub-route are simply not deployed to
-    this endpoint yet. This is not asserted in the log as the cause of a
-    404; the log only ever states what the API returned.
+      - FinOpsApplyVersion is the single Finance and Operations ON/OFF
+        switch. The Finance and Operations phase requires PowerShell 7.
 
     PowerShell variable names are case-insensitive, so every local here is
     prefixed (opt*, cfg*) and can never collide with a parameter name.
@@ -92,6 +116,7 @@ param(
     [Parameter()] [string] $FinOpsApiVersion        = '',
 
     [Parameter()] [string] $DumpDiagnostics     = '',
+    [Parameter()] [string] $DumpSolutionCatalog  = '',
     [Parameter()] [string] $RetryFailedInstalls = '',
     [Parameter()] [string] $WhatIf              = '',
     [Parameter()] [string] $EnvironmentFilter   = '',
@@ -99,15 +124,17 @@ param(
     [Parameter()] [string] $AppExclude          = '',
     [Parameter()] [string] $UsePacFallback      = '',
 
-    # The ONLY Finance and Operations switch. Default false.
-    # Inventory always runs and is read-only, so it has no switch.
     [Parameter()] [string] $FinOpsApplyVersion      = '',
-
-    # Supporting settings for the apply. They refine WHAT and WHERE, but
-    # none of them can enable an apply on their own.
     [Parameter()] [string] $FinOpsTargetVersion     = '',
     [Parameter()] [string] $FinOpsEnvironmentFilter = '',
-    [Parameter()] [string] $FinOpsDeploymentTypes   = ''
+    [Parameter()] [string] $FinOpsDeploymentTypes   = '',
+
+    # Restricts WHICH KIND of available version apply may select, matched
+    # against Microsoft's own releaseStage label on each version:
+    #   QualityUpdate (default) - only versions staged QualityUpdate
+    #   VersionUpdate           - only versions NOT staged QualityUpdate
+    #   Any                     - numerically highest, ignoring stage
+    [Parameter()] [string] $FinOpsUpdateScope       = ''
 )
 
 Set-StrictMode -Off
@@ -121,6 +148,7 @@ $Defaults = @{
     AppManagementApiVersion = '2026-05-01-preview'
     FinOpsApiVersion        = '2024-10-01'
     DumpDiagnostics         = 'true'
+    DumpSolutionCatalog     = 'false'
     RetryFailedInstalls     = 'true'
     WhatIf                  = 'false'
     EnvironmentFilter       = ''
@@ -131,7 +159,10 @@ $Defaults = @{
     FinOpsTargetVersion     = ''
     FinOpsEnvironmentFilter = ''
     FinOpsDeploymentTypes   = 'UnifiedDeveloper,UnifiedSandbox,UnifiedProduction'
+    FinOpsUpdateScope       = 'QualityUpdate'
 }
+
+$FinOpsUpdateScopeValues = @('QualityUpdate','VersionUpdate','Any')
 
 function Get-OrDefault {
     param([AllowEmptyString()] [string] $Value, [AllowEmptyString()] [string] $Default)
@@ -222,32 +253,37 @@ $cfgPpRoot     = Resolve-Setting $PpApiRoot               'PpApiRoot'           
 $cfgAppMgmtVer = Resolve-Setting $AppManagementApiVersion 'AppManagementApiVersion' $Defaults.AppManagementApiVersion
 $cfgFinOpsVer  = Resolve-Setting $FinOpsApiVersion        'FinOpsApiVersion'        $Defaults.FinOpsApiVersion
 
-$optDumpDiag   = ConvertTo-Bool (Resolve-Setting     $DumpDiagnostics     'DumpDiagnostics'     $Defaults.DumpDiagnostics)
-$optRetry      = ConvertTo-Bool (Resolve-Setting     $RetryFailedInstalls 'RetryFailedInstalls' $Defaults.RetryFailedInstalls)
-$optPlanOnly   = ConvertTo-Bool (Resolve-Overridable $WhatIf         'WhatIfOverride'         'WhatIf'         $Defaults.WhatIf)
-$optUsePac     = ConvertTo-Bool (Resolve-Overridable $UsePacFallback 'UsePacFallbackOverride' 'UsePacFallback' $Defaults.UsePacFallback)
-$optEnvFilter  = Resolve-Setting $EnvironmentFilter  'EnvironmentFilter'  $Defaults.EnvironmentFilter
-$optEnvExclude = Resolve-Setting $EnvironmentExclude 'EnvironmentExclude' $Defaults.EnvironmentExclude
-$optAppExclude = Resolve-Setting $AppExclude         'AppExclude'         $Defaults.AppExclude
+$optDumpDiag    = ConvertTo-Bool (Resolve-Setting     $DumpDiagnostics     'DumpDiagnostics'     $Defaults.DumpDiagnostics)
+$optDumpCatalog = ConvertTo-Bool (Resolve-Setting     $DumpSolutionCatalog 'DumpSolutionCatalog' $Defaults.DumpSolutionCatalog)
+$optRetry       = ConvertTo-Bool (Resolve-Setting     $RetryFailedInstalls 'RetryFailedInstalls' $Defaults.RetryFailedInstalls)
+$optPlanOnly    = ConvertTo-Bool (Resolve-Overridable $WhatIf         'WhatIfOverride'         'WhatIf'         $Defaults.WhatIf)
+$optUsePac      = ConvertTo-Bool (Resolve-Overridable $UsePacFallback 'UsePacFallbackOverride' 'UsePacFallback' $Defaults.UsePacFallback)
+$optEnvFilter   = Resolve-Setting $EnvironmentFilter  'EnvironmentFilter'  $Defaults.EnvironmentFilter
+$optEnvExclude  = Resolve-Setting $EnvironmentExclude 'EnvironmentExclude' $Defaults.EnvironmentExclude
+$optAppExclude  = Resolve-Setting $AppExclude         'AppExclude'         $Defaults.AppExclude
 
-# Finance and Operations: ONE switch.
-# Precedence: queue-time override, then library variable, then false.
 $optDoApply = ConvertTo-Bool (Resolve-Overridable $FinOpsApplyVersion 'FinOpsApplyVersionOverride' 'FinOpsApplyVersion' $Defaults.FinOpsApplyVersion)
 
 $optFinOpsTarget   = Resolve-Overridable $FinOpsTargetVersion 'FinOpsTargetVersionOverride' 'FinOpsTargetVersion' $Defaults.FinOpsTargetVersion
 $optFinOpsEnvList  = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnvironmentFilter' $Defaults.FinOpsEnvironmentFilter
 $optFinOpsDepTypes = Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
 
-# Retired variables. If either is still sitting in a variable group, say so
-# once so nobody believes it is still doing something.
+$optFinOpsScopeRaw = Resolve-Overridable $FinOpsUpdateScope 'FinOpsUpdateScopeOverride' 'FinOpsUpdateScope' $Defaults.FinOpsUpdateScope
+$optFinOpsScope    = $Defaults.FinOpsUpdateScope
+$optFinOpsScopeWasInvalid = $false
+foreach ($v in $FinOpsUpdateScopeValues) {
+    if ($optFinOpsScopeRaw -ieq $v) { $optFinOpsScope = $v; break }
+}
+if (-not ($FinOpsUpdateScopeValues | Where-Object { $_ -ieq $optFinOpsScopeRaw })) {
+    $optFinOpsScopeWasInvalid = ($optFinOpsScopeRaw -ne $Defaults.FinOpsUpdateScope)
+}
+
 $optRetiredVars = @()
 foreach ($retired in @('UpdateFinOpsVersion','FinOpsInventory')) {
     $rv = [Environment]::GetEnvironmentVariable($retired)
     if ((Get-OrDefault $rv '__unset__') -ne '__unset__') { $optRetiredVars += $retired }
 }
 
-# The Finance and Operations phase uses Invoke-WebRequest -SkipHttpErrorCheck,
-# which is PowerShell 7 only. Phase 1 runs fine on 5.1.
 $optPs7      = ($PSVersionTable.PSVersion.Major -ge 7)
 $optDoFinOps = $true
 if (-not $optPs7) { $optDoFinOps = $false; $optDoApply = $false }
@@ -272,10 +308,6 @@ function Get-Token {
     return $r.access_token
 }
 
-# Status-aware call. Never throws on an HTTP error.
-# Status is the real HTTP status code. A request that never produced a
-# response (DNS, TLS, timeout, unsupported parameter) is reported with
-# Transport = $true rather than a fake status code.
 function Invoke-PpRest {
     param(
         [string] $Method = 'GET',
@@ -307,7 +339,6 @@ function Invoke-PpRest {
     return [pscustomobject]@{ Status = $status; Text = $text; Json = $json; Transport = $transport }
 }
 
-# Returns the API error code when present, for factual reporting.
 function Get-ApiErrorCode {
     param($Response)
     if ($null -eq $Response) { return '' }
@@ -317,19 +348,17 @@ function Get-ApiErrorCode {
     return ''
 }
 
-# One consistent sentence for a failed call, whether it failed at the
-# transport layer or returned an HTTP error status.
 function Format-RestFailure {
     param([string] $Leaf, $Response)
     if ($null -eq $Response) { return "$Leaf failed with no response object." }
     if ($Response.Transport) {
         $detail = [string]$Response.Text
-        if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) + '...' }
-        return "$Leaf request failed before any HTTP response was received. $detail"
+        if ($detail.Length -gt 200) { $detail = $detail.Substring(0, 200) + '...' }
+        return "transport failure. $detail"
     }
     $codeText = Get-ApiErrorCode -Response $Response
-    if ($codeText -ne '') { return "$Leaf returned HTTP $($Response.Status) ($codeText)." }
-    return "$Leaf returned HTTP $($Response.Status)."
+    if ($codeText -ne '') { return "HTTP $($Response.Status) ($codeText)" }
+    return "HTTP $($Response.Status)"
 }
 
 function New-PpUrl {
@@ -419,9 +448,6 @@ function Resolve-InstalledVersion {
     return $null
 }
 
-# Matching order: exact, then wildcard when the needle contains '*', then
-# substring. Substring is deliberately last and is the loosest form; a short
-# needle will match broadly. See docs/parameters.md.
 function Test-AppExcluded {
     param($Pkg, $List)
     if ((Get-Count $List) -eq 0) { return $false }
@@ -459,6 +485,13 @@ function Test-CustomInstallExperience {
     return ($m -match 'custom install experience') -or ($m -match 'single page application') -or ($m -match 'not supported by this api')
 }
 
+function Test-EnvironmentNotEnabled {
+    param([AllowEmptyString()] [string] $Message)
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+    $m = $Message.ToLowerInvariant()
+    return ($m -match 'is not enabled') -or ($m -match 'environment is disabled') -or ($m -match 'admin ?mode')
+}
+
 function Invoke-AppInstall {
     param($Pkg, [string] $EnvId, [hashtable] $Headers)
     $installUrl = New-PpUrl -Path "/appmanagement/environments/$EnvId/applicationPackages/$($Pkg.uniqueName)/install"
@@ -469,7 +502,7 @@ function Invoke-AppInstall {
     return $false
 }
 
-function Get-FinOpsMarker {
+function Get-FinOpsMarkerPackage {
     param($Packages)
     $markers = @('msdyn_financeandoperationsprovisioningapp','financeandoperationsprovisioning','dynamics365financeandoperations')
     foreach ($p in @($Packages)) {
@@ -478,15 +511,19 @@ function Get-FinOpsMarker {
         $un = ([string]$p.uniqueName).ToLower()
         $ln = ([string]$p.localizedName).ToLower()
         foreach ($m in $markers) {
-            if ($un.Contains($m)) { return [string]$p.uniqueName }
+            if ($un.Contains($m)) { return $p }
         }
         if ($ln.Contains('finance and operations') -and -not $ln.Contains('package manager')) {
-            return [string]$p.localizedName
+            return $p
         }
     }
     return $null
 }
 
+# Returns an array of [pscustomobject]@{ Version; ReleaseStage } - the
+# releaseStage is Microsoft's OWN classification of each version, read
+# directly from the response, not derived by this script. An entry with
+# no releaseStage field gets 'Unknown' rather than being guessed at.
 function ConvertTo-FinOpsVersionList {
     param($Json)
     if ($null -eq $Json) { return @() }
@@ -494,22 +531,40 @@ function ConvertTo-FinOpsVersionList {
     foreach ($p in @('availableVersions','value','versions','items','data')) {
         if ($Json.$p) { $items = $Json.$p; break }
     }
-    $versions = @()
+    $out = @()
+    $seen = @{}
     foreach ($i in @($items)) {
-        $v = $null
+        $v = $null; $stage = 'Unknown'
         if ($i -is [string]) { $v = $i }
         else {
             foreach ($p in @('version','applicationVersion','name','value')) {
                 if ($i.$p -and ([string]$i.$p) -match '^\d+(\.\d+)+') { $v = [string]$i.$p; break }
             }
+            if ($i.releaseStage) { $stage = [string]$i.releaseStage }
         }
-        if ($v -and ($versions -notcontains $v)) { $versions += $v }
+        if ($v -and -not $seen.ContainsKey($v)) {
+            $seen[$v] = $true
+            $out += [pscustomobject]@{ Version = $v; ReleaseStage = $stage }
+        }
     }
-    return $versions
+    return $out
+}
+
+# Friendly label for a scope value, matching Microsoft's own terminology
+# for these releases (PQU = "proactive quality update", the term used on
+# https://learn.microsoft.com/.../quality-updates-schedule). Used only in
+# display text; the actual filtering still matches releaseStage exactly.
+function Get-FinOpsScopeLabel {
+    param([string] $Scope)
+    switch ($Scope) {
+        'QualityUpdate' { return 'PQU' }
+        'VersionUpdate' { return 'version update' }
+        default         { return $Scope }
+    }
 }
 
 function Select-HighestVersion {
-    param($Versions)
+    param($Versions)   # array of plain version strings
     $best = $null
     foreach ($v in $Versions) {
         $s = [string]$v
@@ -576,20 +631,21 @@ Write-Host ("  FinOpsApplyVersion      : " + $optDoApply)
 Write-Host ("  FinOpsApiVersion        : " + $Config.FinOpsApiVersion)
 Write-Host ("  FinOpsEnvironmentFilter : " + (Format-Scope -Raw $optFinOpsEnvList -EmptyLabel '(all detected F&O environments)'))
 if ($optDoApply) {
-    $tgtLabel = '(latest available)'
+    $tgtLabel = '(highest matching scope)'
     if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
     Write-Host ("  FinOpsTargetVersion     : " + $tgtLabel)
     Write-Host ("  FinOpsDeploymentTypes   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+    Write-Host ("  FinOpsUpdateScope       : " + $optFinOpsScope)
 }
-Write-Host '  Note: F&O inventory always runs and is read-only.'
-Write-Host '  Note: LCS managed environments are inventoried but never version-updated.'
 
-# Notices come after the settings block, so they never split it in the log.
 if ((Get-Count $optRetiredVars) -gt 0) {
     Write-Host ''
     Write-Warning ("These variables no longer exist and are ignored: " + (Join-Names $optRetiredVars) + ".")
-    Write-Warning 'Finance and Operations has a single switch: finOpsApplyVersion. Inventory always runs and is read-only.'
-    Write-Warning 'Remove the retired variables from the variable group to silence this message.'
+}
+
+if ($optFinOpsScopeWasInvalid) {
+    Write-Host ''
+    Write-Warning ("finOpsUpdateScope value '" + $optFinOpsScopeRaw + "' is not recognised. Valid values: " + (Join-Names $FinOpsUpdateScopeValues) + ". Falling back to " + $Defaults.FinOpsUpdateScope + ".")
 }
 
 if (-not $optPs7) {
@@ -600,9 +656,7 @@ if (-not $optPs7) {
 
 if ($optDoApply) {
     Write-Host ''
-    Write-Host '##[warning]Finance and Operations version apply is ENABLED by finOpsApplyVersion = true.'
-    Write-Host '##[warning]Eligible environments will be moved to a new application version.'
-    Write-Host '##[warning]This is a long-running operation and affects availability.'
+    Write-Host ('##[warning]FINANCE AND OPERATIONS UPDATE IS ENABLED. Scope: ' + $optFinOpsScope + '. This is a long-running operation and affects availability.')
 }
 
 Write-Section 'Authenticating'
@@ -642,9 +696,12 @@ $knownUpdateHints = @('Customer Service Analytics','Customer Service Intelligenc
 
 $totalEnvironments = 0; $totalUpdates = 0; $totalRetries = 0; $totalOperations = 0
 $totalUpToDate = 0; $totalNoMatch = 0; $totalFailed = 0; $totalManual = 0; $totalExcluded = 0
+$totalAdminModeEnvs = 0; $totalAdminModeSkipped = 0
 $solDumped = $false
-$manualList     = @()
-$finOpsDetected = @()
+$manualList         = @()
+$adminModeList      = @()
+$finOpsDetected     = @()
+$finOpsAnchorVersions = @{}   # envId -> Anchor Solution version. Diagnostic only - see v2.4.0. NEVER used to accept/reject/classify anything.
 
 # ===================== PHASE 1: application updates =====================
 foreach ($envObj in $environments) {
@@ -665,7 +722,7 @@ foreach ($envObj in $environments) {
 
     try {
         $hints = @()
-        if ($optDumpDiag -and -not $solDumped) { $hints = @('crm','hub','sales','insight','productivity','globalization','quality','channel','customerservice','outlook') }
+        if ($optDumpCatalog -and -not $solDumped) { $hints = @('crm','hub','sales','insight','productivity','globalization','quality','channel','customerservice','outlook') }
         $solMap = Get-SolutionVersionMap -InstanceUrl $instanceUrl -DumpHints $hints
         $solDumped = $true
     }
@@ -676,16 +733,20 @@ foreach ($envObj in $environments) {
         continue
     }
 
-    $foMarker = Get-FinOpsMarker -Packages $available
-    if ($foMarker) {
-        Write-Host "Finance and Operations solutions present (package: $foMarker)."
+    $foMarkerPkg = Get-FinOpsMarkerPackage -Packages $available
+    if ($foMarkerPkg) {
         $finOpsDetected += $envObj
+        $finOpsAnchorVersions[$envId] = Resolve-InstalledVersion -Pkg $foMarkerPkg -Map $solMap -Alias $appSolutionAlias
+        Write-Host "Finance and Operations detected. Live version and update status are reported in the Finance and Operations phase below."
     }
 
     $candidates = @()
+    $foMarkerSkipped = 0
     foreach ($p in $available) {
         if (-not $p.uniqueName) { continue }
-        if ($p.state -eq 'Installed' -or ($optRetry -and $p.state -eq 'InstallFailed')) { $candidates += $p }
+        if ($p.state -ne 'Installed' -and -not ($optRetry -and $p.state -eq 'InstallFailed')) { continue }
+        if ($foMarkerPkg -and $p.uniqueName -eq $foMarkerPkg.uniqueName) { $foMarkerSkipped++; continue }
+        $candidates += $p
     }
     Write-Host "Installed apps evaluated: $(Get-Count $candidates)  (managed solutions read: $($solMap.Count))"
 
@@ -705,6 +766,7 @@ foreach ($envObj in $environments) {
     }
 
     $envUpdates = 0; $envRetries = 0; $envUpToDate = 0; $envNoMatch = 0; $envExcluded = 0; $envManual = 0; $noMatchNames = @()
+    $envAdminMode = $false; $envAdminModeSkipped = 0
 
     foreach ($pkg in $candidates) {
         $name = $pkg.uniqueName
@@ -717,6 +779,8 @@ foreach ($envObj in $environments) {
             continue
         }
 
+        if ($envAdminMode) { $envAdminModeSkipped++; continue }
+
         if ($pkg.state -eq 'InstallFailed') {
             $envRetries++; $totalRetries++
             Write-Host ''
@@ -725,7 +789,11 @@ foreach ($envObj in $environments) {
             try { if (Invoke-AppInstall -Pkg $pkg -EnvId $envId -Headers $ppHeaders) { $totalOperations++ } }
             catch {
                 $errText = Get-ErrorText -ErrorRecord $_
-                if (Test-CustomInstallExperience -Message $errText) {
+                if (Test-EnvironmentNotEnabled -Message $errText) {
+                    $envAdminMode = $true
+                    Write-Host "##[warning]Environment '$envName' is not enabled (Admin Mode). Skipping remaining installs for this environment."
+                }
+                elseif (Test-CustomInstallExperience -Message $errText) {
                     $handled = $false
                     if ($optUsePac) { $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
                     if (-not $handled) {
@@ -749,7 +817,11 @@ foreach ($envObj in $environments) {
         try { if (Invoke-AppInstall -Pkg $pkg -EnvId $envId -Headers $ppHeaders) { $totalOperations++ } }
         catch {
             $errText = Get-ErrorText -ErrorRecord $_
-            if (Test-CustomInstallExperience -Message $errText) {
+            if (Test-EnvironmentNotEnabled -Message $errText) {
+                $envAdminMode = $true
+                Write-Host "##[warning]Environment '$envName' is not enabled (Admin Mode). Skipping remaining installs for this environment."
+            }
+            elseif (Test-CustomInstallExperience -Message $errText) {
                 $handled = $false
                 if ($optUsePac) { Write-Host "  Needs a custom install. Trying PAC CLI fallback..."; $handled = Invoke-PacInstall -EnvironmentId $envId -Pkg $pkg }
                 if ($handled) { Write-Host "  Updated '$name' via PAC CLI." }
@@ -768,18 +840,51 @@ foreach ($envObj in $environments) {
         Write-Host '##[endgroup]'
     }
 
+    if ($envAdminMode) {
+        $totalAdminModeEnvs++
+        $totalAdminModeSkipped += $envAdminModeSkipped
+        $adminModeList += [pscustomobject]@{ Environment = $envName; Id = $envId; AppsSkipped = $envAdminModeSkipped }
+    }
+
     Write-Host ''
-    Write-Host "Environment summary -> updates: $envUpdates | failed-retries: $envRetries | up-to-date: $envUpToDate | no solution match: $envNoMatch | app-excluded: $envExcluded | manual: $envManual"
+    $summaryLine = "Environment summary -> updates: $envUpdates | failed-retries: $envRetries | up-to-date: $envUpToDate | no solution match: $envNoMatch | app-excluded: $envExcluded | manual: $envManual"
+    if ($envAdminMode) { $summaryLine += " | ADMIN MODE: $envAdminModeSkipped app(s) skipped" }
+    Write-Host $summaryLine
 }
 
 # ======= PHASE 2: Finance and Operations inventory and version apply =======
 #
-# Inventory always runs and is read-only.
-# Version apply runs only when FinOpsApplyVersion is true AND the deployment
-# type is eligible.
-#
-# Every F&O environment is probed individually. Nothing is assumed from the
-# result of another environment. Reporting states what the API returned.
+# v2.4.0: classification uses Microsoft's own releaseStage label on each
+# finopsversions entry - not the Anchor Solution, which has been confirmed
+# unreliable (see the top of this file). Output is one compact line per
+# environment; the explanation below is printed ONCE rather than repeated.
+
+function Complete-FoEnvironment {
+    param(
+        [Parameter(Mandatory)] [string] $EnvName,
+        [Parameter(Mandatory)] [string] $Headline,
+        [string[]] $Diag = @(),
+        [bool]     $ShowDiag,
+        [string]   $Application = '',
+        [string]   $Platform    = '',
+        [string]   $Deployment  = '',
+        [string]   $AOS         = '',
+        [Parameter(Mandatory)] [string] $Note
+    )
+    $label = $EnvName + ": " + $Headline
+    if ($ShowDiag -and (Get-Count $Diag) -gt 0) {
+        Write-Host ('##[group]' + $label)
+        foreach ($d in $Diag) { Write-Host ("    " + $d) }
+        Write-Host '##[endgroup]'
+    }
+    else {
+        Write-Host $label
+    }
+    $script:foInventory += [pscustomobject]@{
+        Environment = $EnvName; Application = $Application; Platform = $Platform
+        Deployment = $Deployment; AOS = $AOS; Note = $Note
+    }
+}
 
 $foInventory    = @()
 $foChecked      = 0
@@ -789,6 +894,7 @@ $foPropsFailed  = 0
 $foNotEligible  = 0
 $foNoVersions   = 0
 $foRouteMissing = 0
+$foScopeFiltered = 0
 
 if ($optDoFinOps) {
     try {
@@ -809,35 +915,32 @@ if ($optDoFinOps) {
             Write-Host 'No Finance and Operations environments to process.'
         }
         else {
-            Write-Host ("Environments to inspect     : " + (Get-Count $foTargets))
             if ($optDoApply) {
-                $tgtLabel = '(latest available)'
+                $tgtLabel = '(highest matching scope)'
                 if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
-                Write-Host ("Mode                        : inventory + version apply")
-                Write-Host ("Target version              : " + $tgtLabel)
-                Write-Host ("Eligible deployment types   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
+                Write-Host ("Environments: " + (Get-Count $foTargets) + " | Apply enabled | Scope: " + $optFinOpsScope + " | Target: " + $tgtLabel)
+                Write-Host "Scope is matched against Microsoft's own releaseStage on each available version (QualityUpdate = PQU, a same-train patch; anything else = a new version update / release train)."
+                Write-Host "A version is applied only when the apply call itself returns 202; a 204 means the platform confirms nothing is needed. No other check decides this."
             }
             else {
-                Write-Host ("Mode                        : inventory only (read-only)")
-                Write-Host  "Version apply               : off (set finOpsApplyVersion = true to enable)"
+                Write-Host ("Environments: " + (Get-Count $foTargets) + " | Inventory only (set finOpsApplyVersion = true to enable apply)")
             }
-            Write-Host 'Each environment is probed separately. Nothing is assumed from another.'
+            Write-Host ''
 
             foreach ($envObj in $foTargets) {
                 $foChecked++
                 $envNameFo = [string]$envObj.DisplayName
                 $envIdFo   = [string]$envObj.Id
+                $anchorVer = $null
+                if ($finOpsAnchorVersions.ContainsKey($envIdFo)) { $anchorVer = $finOpsAnchorVersions[$envIdFo] }
 
-                Write-Host ''
-                Write-Host ('##[group]F&O: ' + $envNameFo)
-
-                # ---------- Inventory (also supplies data the apply needs) ----------
                 $propUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsproperties'
                 $pr = Invoke-PpRest -Method 'GET' -RequestUri $propUri -Headers $ppHeaders
                 if ($pr.Transport -or $pr.Status -lt 200 -or $pr.Status -ge 300) {
                     $foPropsFailed++
-                    Write-Host ('  ' + (Format-RestFailure -Leaf 'finopsproperties' -Response $pr))
-                    Write-Host '##[endgroup]'
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag `
+                        -Headline ("properties unavailable - " + (Format-RestFailure -Response $pr)) `
+                        -Note ('properties: ' + $(if ($pr.Transport) { 'transport failure' } else { 'HTTP ' + $pr.Status }))
                     continue
                 }
 
@@ -857,165 +960,151 @@ if ($optDoFinOps) {
                     if ($pr.Json.scheduledActions) { $sched = @($pr.Json.scheduledActions) }
                 }
 
-                Write-Host ('  Application version : ' + $curVer)
-                if ($platVer  -ne '') { Write-Host ('  Platform version    : ' + $platVer) }
-                if ($depType  -ne '') { Write-Host ('  Deployment type     : ' + $depType) }
-                if ($aosInt   -ne '') { Write-Host ('  AOS (interactive)   : ' + $aosInt) }
-                if ($aosBatch -ne '') { Write-Host ('  AOS (batch)         : ' + $aosBatch) }
-                if ($demo     -ne '') { Write-Host ('  Demo dataset        : ' + $demo) }
-                if ((Get-Count $sched) -gt 0) { Write-Host ('  Scheduled actions   : ' + (Get-Count $sched)) }
-                else { Write-Host '  Scheduled actions   : none' }
+                # Anchor Solution shown only as a labeled diagnostic value,
+                # never used in any decision. See v2.4.0 notes.
+                $diag = @()
+                if ($aosBatch -ne '') { $diag += ('AOS (batch)     : ' + $aosBatch) }
+                if ($demo     -ne '') { $diag += ('Demo dataset    : ' + $demo) }
+                if ((Get-Count $sched) -gt 0) { $diag += ('Scheduled       : ' + (Get-Count $sched)) }
+                if ($anchorVer) { $diag += ('Anchor Solution : ' + $anchorVer + '  (Dataverse record only, not used for any decision here)') }
 
-                $rowNote = 'inventory only'
-
-                # ---------- Stop here when version apply is off ----------
                 if (-not $optDoApply) {
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " (" + $depType + ")") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'inventory only'
                     continue
                 }
 
-                # ---------- Eligibility by deployment type ----------
                 $eligible = $true
                 if ((Get-Count $foDepTypesL) -gt 0) {
                     $eligible = $false
-                    foreach ($dt in $foDepTypesL) {
-                        if ($depType -ieq ([string]$dt)) { $eligible = $true; break }
-                    }
+                    foreach ($dt in $foDepTypesL) { if ($depType -ieq ([string]$dt)) { $eligible = $true; break } }
                 }
-
                 if (-not $eligible) {
                     $foNotEligible++
-                    $rowNote = 'version apply skipped (' + $depType + ')'
-                    if ($depType -like 'LCS*') {
-                        Write-Host '  Version apply skipped. LCS managed environments are updated through'
-                        Write-Host '  Lifecycle Services, not the Power Platform API. Inventory only.'
-                    }
-                    else {
-                        Write-Host ('  Version apply skipped. Deployment type ' + $depType + ' is not in FinOpsDeploymentTypes.')
-                    }
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
+                    $reason = if ($depType -like 'LCS*') { 'LCS managed' } else { 'deployment type not eligible' }
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " (" + $depType + ") - skipped, " + $reason + ".") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note ('version apply skipped (' + $depType + ')')
                     continue
                 }
 
-                # ---------- Available versions (probed per environment) ----------
                 $verUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsversions'
                 $vr = Invoke-PpRest -Method 'GET' -RequestUri $verUri -Headers $ppHeaders
                 if ($vr.Transport -or $vr.Status -lt 200 -or $vr.Status -ge 300) {
                     $codeText = Get-ApiErrorCode -Response $vr
                     if (-not $vr.Transport -and $codeText -eq 'RouteNotFound') {
                         $foRouteMissing++
-                        $rowNote = 'versions: RouteNotFound'
-                        Write-Host '  finopsversions returned HTTP 404 RouteNotFound.'
-                        Write-Host '  finopsproperties succeeded for this environment, so the token, the'
-                        Write-Host '  environment id and the api-version are accepted. This specific route'
-                        Write-Host '  did not resolve on this endpoint.'
-                    }
-                    elseif (-not $vr.Transport -and $vr.Status -eq 403) {
-                        $foFailed++
-                        $rowNote = 'versions: 403'
-                        Write-Host '  finopsversions returned HTTP 403. The service principal lacks permission.'
+                        Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                            -Headline ($curVer + " (" + $depType + ") - versions route unavailable (RouteNotFound).") `
+                            -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'versions: RouteNotFound'
                     }
                     else {
                         $foFailed++
-                        if ($vr.Transport) { $rowNote = 'versions: transport failure' }
-                        else { $rowNote = 'versions: HTTP ' + $vr.Status }
-                        Write-Host ('  ' + (Format-RestFailure -Leaf 'finopsversions' -Response $vr))
+                        Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                            -Headline ($curVer + " (" + $depType + ") - versions lookup failed: " + (Format-RestFailure -Response $vr)) `
+                            -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                            -Note ('versions: ' + $(if ($vr.Transport) { 'transport failure' } else { 'HTTP ' + $vr.Status }))
                     }
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
                     continue
                 }
 
-                $availableVersions = @(ConvertTo-FinOpsVersionList -Json $vr.Json)
-                if ((Get-Count $availableVersions) -eq 0) {
+                $available = @(ConvertTo-FinOpsVersionList -Json $vr.Json)
+                if ((Get-Count $available) -eq 0) {
                     $foNoVersions++
-                    $rowNote = 'no versions returned'
-                    Write-Host '  finopsversions returned HTTP 200 but no versions were listed.'
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " (" + $depType + ") - no versions listed.") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'no versions returned'
                     continue
                 }
 
-                Write-Host ('  Available versions  : ' + (Join-Names $availableVersions))
+                $availLabel = (($available | ForEach-Object { $_.Version + ' [Status: ' + $_.ReleaseStage + ']' }) -join ', ')
+                $diag += ('New version available : ' + $availLabel)
+
+                # Scope filter, matched directly against Microsoft's own
+                # releaseStage - no derived classification of any kind.
+                $scoped = $available
+                if ($optFinOpsScope -eq 'QualityUpdate') {
+                    $scoped = @($available | Where-Object { $_.ReleaseStage -ieq 'QualityUpdate' })
+                }
+                elseif ($optFinOpsScope -eq 'VersionUpdate') {
+                    $scoped = @($available | Where-Object { $_.ReleaseStage -ine 'QualityUpdate' })
+                }
+                if ($optFinOpsScope -ne 'Any' -and (Get-Count $scoped) -eq 0) {
+                    $foScopeFiltered++
+                    $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " (" + $depType + ") - no " + $scopeLabel + " version available. New version available: " + $availLabel) `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note ('no ' + $scopeLabel + ' version available')
+                    continue
+                }
 
                 $target = $optFinOpsTarget
+                $targetStage = 'Unknown'
                 if ($target -eq '') {
-                    $target = Select-HighestVersion -Versions $availableVersions
-                    Write-Host ('  Latest available    : ' + [string]$target)
-                }
-                elseif ($availableVersions -notcontains $target) {
-                    $foFailed++
-                    $rowNote = 'target not available'
-                    Write-Warning ("  Requested version '" + $target + "' is not available here.")
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
-                    continue
-                }
-
-                if ($curVer -ne '' -and $target -and -not (Test-UpdateAvailable -Available ([string]$target) -Installed $curVer)) {
-                    $rowNote = 'up to date'
-                    Write-Host ('  Already at or above ' + [string]$target + '. Nothing to apply.')
-                    $foInventory += [pscustomobject]@{
-                        Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                        Deployment = $depType; AOS = $aosInt; Note = $rowNote
-                    }
-                    Write-Host '##[endgroup]'
-                    continue
-                }
-
-                # ---------- Apply ----------
-                if ($optPlanOnly) {
-                    $foApplied++
-                    $rowNote = 'would apply ' + [string]$target
-                    Write-Host ('  [WhatIf] would apply F&O version ' + [string]$target + '.')
+                    $target = Select-HighestVersion -Versions ($scoped | ForEach-Object { $_.Version })
+                    $match = $available | Where-Object { $_.Version -eq $target } | Select-Object -First 1
+                    if ($match) { $targetStage = $match.ReleaseStage }
                 }
                 else {
-                    $applyUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf ('finopsversions/' + [string]$target + '/apply')
-                    $ar = Invoke-PpRest -Method 'POST' -RequestUri $applyUri -Headers $ppHeaders
-                    if (-not $ar.Transport -and $ar.Status -eq 202) {
-                        $foApplied++
-                        $rowNote = 'applying ' + [string]$target
-                        Write-Host ('  Accepted (202). Applying ' + [string]$target + '. Long-running operation.')
-                        if ($ar.Json -and $ar.Json.operationId) { Write-Host ('  Operation id        : ' + [string]$ar.Json.operationId) }
-                    }
-                    elseif (-not $ar.Transport -and $ar.Status -eq 204) {
-                        $rowNote = 'up to date (204)'
-                        Write-Host '  No content (204). Already at or above the requested version.'
-                    }
-                    else {
+                    $match = $available | Where-Object { $_.Version -eq $target } | Select-Object -First 1
+                    if (-not $match) {
                         $foFailed++
-                        if ($ar.Transport) { $rowNote = 'apply: transport failure' }
-                        else { $rowNote = 'apply: HTTP ' + $ar.Status }
-                        Write-Host ('  ' + (Format-RestFailure -Leaf 'apply' -Response $ar))
+                        Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                            -Headline ($curVer + " -> requested '" + $target + "' is not in the available list.") `
+                            -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'target not available'
+                        continue
+                    }
+                    $targetStage = $match.ReleaseStage
+                    if ($optFinOpsScope -ne 'Any' -and ($scoped.Version -notcontains $target)) {
+                        $foScopeFiltered++
+                        $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
+                        Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                            -Headline ($curVer + " -> requested '" + $target + "' [Status: " + $targetStage + "] is not a " + $scopeLabel + ".") `
+                            -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                            -Note ('target exists but is ' + $targetStage + ', not ' + $optFinOpsScope)
+                        continue
                     }
                 }
 
-                $foInventory += [pscustomobject]@{
-                    Environment = $envNameFo; Application = $curVer; Platform = $platVer
-                    Deployment = $depType; AOS = $aosInt; Note = $rowNote
+                if ($optPlanOnly) {
+                    $foApplied++
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " -> " + [string]$target + " [Status: " + $targetStage + "] - [WhatIf] would apply.") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note ('would apply ' + [string]$target + ' [' + $targetStage + ']')
+                    continue
                 }
-                Write-Host '##[endgroup]'
+
+                $applyUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf ('finopsversions/' + [string]$target + '/apply')
+                $ar = Invoke-PpRest -Method 'POST' -RequestUri $applyUri -Headers $ppHeaders
+                if (-not $ar.Transport -and $ar.Status -eq 202) {
+                    $foApplied++
+                    $opId = ''
+                    if ($ar.Json -and $ar.Json.operationId) { $opId = [string]$ar.Json.operationId }
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " -> " + [string]$target + " [Status: " + $targetStage + "] - accepted, applying (op " + $opId + ").") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note ('applying ' + [string]$target + ' [' + $targetStage + ']')
+                }
+                elseif (-not $ar.Transport -and $ar.Status -eq 204) {
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " -> " + [string]$target + " - platform confirms already at or above (204).") `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note 'up to date (204)'
+                }
+                else {
+                    $foFailed++
+                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                        -Headline ($curVer + " -> " + [string]$target + " - apply failed: " + (Format-RestFailure -Response $ar)) `
+                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                        -Note ('apply: ' + $(if ($ar.Transport) { 'transport failure' } else { 'HTTP ' + $ar.Status }))
+                }
             }
 
             if ((Get-Count $foInventory) -gt 0) {
-                Write-Host ''
                 Write-Host '##[group]Finance and Operations inventory'
                 $foInventory | Sort-Object Deployment, Environment | Format-Table Environment, Application, Platform, Deployment, AOS, Note -AutoSize | Out-String | Write-Host
                 Write-Host '##[endgroup]'
@@ -1038,23 +1127,27 @@ Write-Host "Already up to date:             $totalUpToDate"
 Write-Host "No matching solution (skipped): $totalNoMatch"
 Write-Host "App excluded (skipped):         $totalExcluded"
 Write-Host "Manual install required:        $totalManual"
+if ($totalAdminModeEnvs -gt 0) {
+    Write-Host "Environments in Admin Mode:     $totalAdminModeEnvs"
+    Write-Host "App installs skipped (Admin Mode): $totalAdminModeSkipped"
+}
 Write-Host "Failures/warnings:              $totalFailed"
 Write-Host "F&O environments detected:      $(Get-Count $finOpsDetected)"
 
-if ($optDoFinOps) {
+if ($optDoFinOps -and (Get-Count $finOpsDetected) -gt 0) {
     Write-Host "F&O environments inspected:     $foChecked"
-    Write-Host "F&O inventory collected:        $(Get-Count $foInventory)"
-    if ($foPropsFailed -gt 0) { Write-Host "F&O properties unavailable:     $foPropsFailed" }
+    if ($foPropsFailed -gt 0)  { Write-Host "F&O properties unavailable:     $foPropsFailed" }
     if ($optDoApply) {
-        Write-Host "Version apply skipped (type):   $foNotEligible"
-        Write-Host "Versions route unavailable:     $foRouteMissing"
-        Write-Host "Versions list empty (HTTP 200): $foNoVersions"
         Write-Host "F&O versions applied/planned:   $foApplied"
+        if ($foNotEligible   -gt 0) { Write-Host "  skipped (deployment type):   $foNotEligible" }
+        if ($foRouteMissing  -gt 0) { Write-Host "  skipped (route unavailable): $foRouteMissing" }
+        if ($foNoVersions    -gt 0) { Write-Host "  skipped (no versions listed):$foNoVersions" }
+        if ($foScopeFiltered -gt 0) { Write-Host "  skipped (no scope match):    $foScopeFiltered" }
+        if ($foFailed        -gt 0) { Write-Host "  failed:                      $foFailed" }
     }
     else {
         Write-Host "Version apply:                  off (set finOpsApplyVersion = true)"
     }
-    Write-Host "F&O failures:                   $foFailed"
 }
 else {
     Write-Host "F&O phase:                      skipped (PowerShell 7 required)"
@@ -1064,7 +1157,13 @@ if ((Get-Count $manualList) -gt 0) {
     Write-Host ''
     Write-Host '##[group]Manual install required (use Power Platform Admin Center)'
     $manualList | Sort-Object Environment, App | Format-Table Environment, App, Installed, Available -AutoSize | Out-String | Write-Host
-    Write-Host 'These apps use a Custom Install Experience and cannot be installed by the API.'
+    Write-Host '##[endgroup]'
+}
+
+if ((Get-Count $adminModeList) -gt 0) {
+    Write-Host ''
+    Write-Host '##[group]Environments in Admin Mode'
+    $adminModeList | Sort-Object Environment | Format-Table Environment, Id, AppsSkipped -AutoSize | Out-String | Write-Host
     Write-Host '##[endgroup]'
 }
 
