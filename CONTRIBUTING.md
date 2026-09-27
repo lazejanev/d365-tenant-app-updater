@@ -31,8 +31,9 @@ When you open an issue, include:
 - Guard collection counts with the `Get-Count` helper; do not rely on `.Count` of possibly-empty or scalar values.
 - Keep every configurable value overridable through the variable group, with a sensible default in the script.
 - Fail loudly on real errors, but classify custom-install apps as manual-required rather than failures.
-- Report what an API returned. Do not assert a cause that has not been verified. `finopsversions returned HTTP 404 RouteNotFound` is a fact; an explanation of *why* the route is missing is a guess, and guesses have been wrong here before.
-- Each Finance and Operations capability gets exactly one variable, and its default is the safe/inert value. Do not introduce a second variable, alias, or default that can produce the same effect as an existing switch; that is precisely how a route becoming available on the platform side could silently change behaviour for users who never opted in.
+- Report what an API returned. Do not assert a cause that has not been verified.
+- Each Finance and Operations capability gets exactly one variable, and its default is the safe/inert value. Do not introduce a second variable, alias, or default that can produce the same effect as an existing switch.
+- **When the platform gives you its own classification, use it. Do not derive one.** `finopsversions` returns a `releaseStage` field on every entry (`QualityUpdate`, `GeneralAvailability`, etc.) - this is Microsoft's own answer to "what kind of update is this". An earlier version of this script instead tried to infer the same answer by diffing version numbers against the F&O Provisioning App Anchor Solution, and that inferred value was confirmed live to disagree with reality on roughly half of a tenant's environments (see the invariant below). If an API response already contains the classification you need, use it directly; do not reconstruct it from a proxy value, however plausible that proxy looks.
 
 ## Non-negotiable invariants
 
@@ -64,7 +65,11 @@ An earlier build stopped probing after the first `RouteNotFound` and assumed eve
 
 ### 5. Destructive behaviour must be opt-in, and only one variable may ever enable it
 
-`finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. It exists precisely because the apply path is gated behind a live route check and would otherwise activate on its own the moment the route became available. Do not add a second variable, alias, or combined switch that can also flip this on: a variable that used to have that effect (`updateFinOpsVersion`) is now explicitly retired and ignored rather than repurposed, for exactly this reason. Any future capability with the same shape (implemented, dormant, waiting on a platform change) gets its own explicit switch, defaulting to off, reachable through exactly one variable.
+`finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. It exists precisely because the apply path is gated behind a live route check and would otherwise activate on its own the moment the route became available. Do not add a second variable, alias, or combined switch that can also flip this on.
+
+### 6. Do not trust a Dataverse solution-catalog version as a live-state proxy
+
+The F&O Provisioning App Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import). It is **not** updated by Microsoft's own automated Unified environment service update rollout - the normal way these environments actually get updated. Confirmed live: ten environments sharing the identical, freshly-fetched `finopsproperties.applicationVersion` reported two different Anchor Solution values in the same run. Never use this value (or any similar Dataverse-registered proxy) as the basis for a decision about an environment's true current state. It may still be shown as a labeled diagnostic, but never in a headline that implies it is authoritative.
 
 ### Other traps worth knowing
 
@@ -74,6 +79,7 @@ An earlier build stopped probing after the first `RouteNotFound` and assumed eve
 - **Detection must check state.** The package list is fetched with `appInstallState=All`, so it includes apps merely *offered*. Matching without checking `state -eq 'Installed'` once flagged every environment as F&O.
 - **Undefined `$(var)` passed as a script argument crashes PowerShell.** Pass optional values through the pipeline `env:` block so an undefined variable arrives as a harmless literal the script ignores.
 - **`-SkipHttpErrorCheck` is PowerShell 7 only.** Guard any new use of it, as the F&O phase does.
+- **A collapsible `##[group]` label should be the finding, not a placeholder.** Azure DevOps shows a group's label even when collapsed (its default state). If the label is generic ("F&O detail") rather than the actual outcome, comparing many collapsed environments becomes impossible without expanding every one. Always set the group label to the same headline text you would want to read if nothing were expanded.
 
 ## Validation checklist before shipping a script change
 
