@@ -11,11 +11,11 @@ Finance and Operations scope messages now use Microsoft's own public terminology
 - Every `[stage]` bracket in a headline is now `[Status: stage]`.
 - The diagnostic line listing available versions is now labeled "New version available" rather than the bare "Available".
 
-Example, before and after:
+Example, before and after (environment name is an illustrative placeholder):
 
 ```
-Before: TPM-DEV04: ... - no QualityUpdate version offered. Available: 10.0.49.2 [GeneralAvailability]
-After:  TPM-DEV04: ... - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
+Before: Dev04: ... - no QualityUpdate version offered. Available: 10.0.49.2 [GeneralAvailability]
+After:  Dev04: ... - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
 ```
 
 No release-stage matching, scope filtering, or apply decision changed. If you compared two runs before and after this release and the wording differences confused you at first, that confusion is expected and resolved by this note alone - the underlying `finopsversions` route itself is separately known to be intermittent (see v2.4.0 below and `docs/setup.md`), and can produce a genuinely different result between two runs regardless of this script.
@@ -26,7 +26,7 @@ Removes the F&O Provisioning App Anchor Solution from every decision this script
 
 ### Why this release exists
 
-The previous approach (introduced in v2.3.3) used the Anchor Solution's Dataverse-registered version as the reference point for deciding whether an available F&O version was a same-train patch or a new release train. This was confirmed live to be unreliable in a way that was structural, not occasional: **ten environments in a single run shared the identical live application build**, yet their Anchor Solution readings split into two different values. The reason: Microsoft's own automated Unified environment service update rollout does not update that Dataverse record at all - only a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import) does. An environment updated the normal way could carry a stale Anchor Solution version indefinitely while being completely current in reality.
+The previous approach (introduced in v2.3.3) used the Anchor Solution's Dataverse-registered version as the reference point for deciding whether an available F&O version was a same-train patch or a new release train. This was confirmed live to be unreliable in a way that was structural, not occasional: **multiple environments in a single run shared the identical live application build**, yet their Anchor Solution readings split into two different values. The reason: Microsoft's own automated Unified environment service update rollout does not update that Dataverse record at all - only a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import) does. An environment updated the normal way could carry a stale Anchor Solution version indefinitely while being completely current in reality.
 
 The fix removes the Anchor Solution from the decision path entirely. It turns out the platform already answers the question directly: `finopsversions` returns a `releaseStage` field on every entry (for example `{"version":"10.0.48.7","releaseStage":"QualityUpdate"}`). There was never a need to derive a classification from a proxy value when the platform's own answer was in the response the whole time.
 
