@@ -40,7 +40,8 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 
 | Variable | Default | Description |
 |---|---|---|
-| `dumpDiagnostics` | `true` | Print installed-vs-available diagnostics per environment. |
+| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail (installed-vs-available diffs, F&O AOS/demo detail, Anchor Solution reference value). |
+| `dumpSolutionCatalog` | `false` | Dump every Dataverse managed solution matching a broad generic-app hint list. Separate from `dumpDiagnostics` because on a Sales-heavy environment this alone can run to 150+ lines unrelated to F&O. |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install ended in `InstallFailed`. |
 | `whatIf` | `false` | Plan only. Report what would change without changing anything. |
 | `usePacFallback` | `false` | Attempt a PAC CLI install for custom-install apps. |
@@ -50,35 +51,49 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 
 ### Finance and Operations
 
-Inventory always runs and is read-only. It costs one GET per detected F&O environment and changes nothing, so there is no switch for it. The **only** Finance and Operations variable that changes behaviour is `finOpsApplyVersion`.
+The F&O phase has **one on/off switch** (`finOpsApplyVersion`) and **one scope control** (`finOpsUpdateScope`). Inventory always runs and is read-only regardless of either setting.
 
 | Variable | Default | Description |
 |---|---|---|
-| `finOpsApplyVersion` | `false` | **The only switch.** Set to `true` to apply a new F&O application version on eligible environments. Everything else in this table only refines what/where an apply targets; none of them enable an apply on their own. |
-| `finOpsTargetVersion` | (blank = latest) | A specific F&O application version to apply, for example `10.0.47.5`. Blank selects the highest available version per environment. Only used when `finOpsApplyVersion` is `true`. |
+| `finOpsApplyVersion` | `false` | **The only on/off switch.** Set to `true` to apply a new F&O application version on eligible environments. Everything else in this table only refines what/where/which kind an apply targets; none of them enable an apply on their own. |
+| `finOpsUpdateScope` | `QualityUpdate` | Restricts **which kind** of available version may be selected. See "How scope is decided" below. Displayed in the log using Microsoft's own terminology: `QualityUpdate` shows as **PQU**, `VersionUpdate` shows as **version update**. |
+| `finOpsTargetVersion` | (blank = highest matching scope) | A specific F&O application version to apply, for example `10.0.49.2`. Blank selects the highest version that matches `finOpsUpdateScope` per environment. If you name a version explicitly, it is still checked against the scope (unless scope is `Any`) and reported if it doesn't match. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list applied to the F&O phase only, on top of `environmentFilter` and `environmentExclude`. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a **version apply**. Inventory is always collected regardless. LCS types are excluded by default. |
 
-#### Why apply is a single, off-by-default switch
+#### How scope is decided
 
-Version discovery and apply are implemented against the documented Power Platform API and are gated behind a live route check, so they begin working automatically once the route is available on your endpoint.
+`finOpsUpdateScope` is matched **directly against Microsoft's own `releaseStage` field**, present on every entry returned by the `finopsversions` API (for example: `{"version":"10.0.48.7","releaseStage":"QualityUpdate"}`). There is no derived or guessed classification involved.
 
-That is exactly why `finOpsApplyVersion` must be a single, explicit, off-by-default switch, with no other variable able to turn it on. If inventory and apply shared a switch, or if a legacy variable could enable apply as a side effect, then the day the route deploys, anyone whose configuration merely enabled the F&O phase for the inventory table would start applying application versions on their next scheduled run without having asked for it. With one variable and one meaning, that cannot happen: apply only ever runs when `finOpsApplyVersion = true` is set explicitly, in the variable group or as a queue-time parameter.
+| `finOpsUpdateScope` | Selects |
+|---|---|
+| `QualityUpdate` (default, shown as **PQU** in the log) | Only versions Microsoft has staged `QualityUpdate` — an in-place patch on the environment's current release train. |
+| `VersionUpdate` (shown as **version update**) | Only versions staged anything other than `QualityUpdate` — a new release train, with schema and feature changes. |
+| `Any` | Every version returned, ignoring `releaseStage`; the numerically highest is selected. This is the only mode where a full release-wave jump can be selected as the default target. |
+
+**Important: this does not use the F&O Provisioning App Anchor Solution for classification, by design.** An earlier version of this script did, and it was confirmed live to be unreliable: ten environments sharing the identical live application build reported two different Anchor Solution values in the same run. The reason is structural, not a timing issue — the Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import), and is **not** touched by Microsoft's own automated Unified environment service update rollout, which is how these environments are actually updated in normal operation. Using it as a classification reference would have meant scope decisions were sometimes made against a value that did not reflect the environment's real state.
+
+The Anchor Solution's version is still shown, under `dumpDiagnostics`, as a single labeled diagnostic line — never in a decision-making headline, and never used to accept, reject, or classify anything.
+
+#### Why apply has exactly one on/off switch
+
+Version apply is implemented against the documented Power Platform API and is gated behind a live route check, so it begins working automatically once the `finopsversions` route is available on your endpoint. That is exactly why it must be a single, explicit, off-by-default variable with nothing else able to enable it: if inventory and apply shared a switch, or if a legacy variable could enable apply as a side effect, then the day the route deploys, anyone who had only enabled the phase for the inventory table would start applying application versions on their next scheduled run without having asked for it.
 
 #### Retired variables
 
-Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional, so a switch for it made no sense) and `updateFinOpsVersion` (an earlier combined switch). If either is still present in the variable group, the script ignores it and prints a one-time warning naming exactly which one it found. Remove them; nothing needs to replace them, since inventory always runs and `finOpsApplyVersion` is the only apply trigger.
+Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional, so a switch for it made no sense) and `updateFinOpsVersion` (an earlier combined switch, superseded by `finOpsApplyVersion`). If either is still present in the variable group, the script ignores it and prints a one-time warning naming exactly which one it found. Remove them; nothing needs to replace them.
 
 ## Runtime parameters
 
-Four settings are also exposed as queue-time inputs, so you can override them for a single manual run without editing the variable group:
+Five settings are also exposed as queue-time inputs, so you can override them for a single manual run without editing the variable group:
 
 | Parameter | Values | Effect |
 |---|---|---|
-| Plan only (`whatIf`) | `useLibraryOrDefault`, `true`, `false` | Overrides the library/default for this run. The sentinel defers to the variable group value or the script default. |
+| Plan only (`whatIf`) | `useLibraryOrDefault`, `true`, `false` | Overrides the library/default for this run. |
 | Try PAC CLI fallback (`usePacFallback`) | `useLibraryOrDefault`, `true`, `false` | Same override behavior. When effectively true, the pipeline installs the PAC CLI on the agent. |
 | Apply F&O version (`finOpsApplyVersion`) | `useLibraryOrDefault`, `true`, `false` | **Changes environments.** Enables version apply for this run only. |
-| F&O target version (`finOpsTargetVersion`) | free text | A specific version for this run. Blank defers to the library value or latest available. |
+| F&O update scope (`finOpsUpdateScope`) | `useLibraryOrDefault`, `QualityUpdate`, `VersionUpdate`, `Any` | Overrides which kind of version is selected, for this run only. |
+| F&O target version (`finOpsTargetVersion`) | free text | A specific version for this run. Blank defers to the library value or highest matching scope. |
 
 ## Environment scoping: how filter and exclude work
 
@@ -126,7 +141,7 @@ Matching is tried in this order:
 > **Substring matching is deliberately loose, and it is the fallback whenever the value contains no `*`.**
 > A long, specific value like `FinanceAndOperationsProvisioning` is safe. A short generic value is not: `sales` would exclude every app with "sales" anywhere in its unique name, localized name, application name or id, which is likely far more than you intended. When in doubt, use the exact unique name, or an explicit wildcard so the intent is visible.
 
-The default is blank. Apps that require the Power Platform Admin Center install wizard are reported under **manual install required** rather than hidden, so you can see what still needs a human. Add them to `appExclude` if you would rather silence them.
+The default is blank. Apps that require the Power Platform Admin Center install wizard are reported under **manual install required** rather than hidden, so you can see what still needs a human. Add them to `appExclude` if you would rather silence them. The F&O Provisioning App Anchor Solution never needs to be added here: it is excluded from the generic install loop entirely, because it is exclusively updated through the dedicated Finance and Operations route.
 
 ## Finance and Operations scoping
 
@@ -148,7 +163,7 @@ Controls which deployment types are eligible for a **version apply**. Inventory 
 | `LCSSandbox` | No | Inventory only. Updated through Lifecycle Services. |
 | `LCSProduction` | No | Inventory only. Updated through Lifecycle Services. |
 
-LCS managed environments are excluded deliberately. Their application updates are driven through Lifecycle Services, not the Power Platform API, so attempting an apply would be incorrect. If you ever need to change the list, set the variable explicitly.
+LCS managed environments are excluded deliberately. Their application updates are driven through Lifecycle Services, not the Power Platform API, so attempting an apply would be incorrect.
 
 ## Example: safe production-protected preview
 
@@ -157,17 +172,25 @@ Variable group:
 - `whatIf = true`
 - `environmentExclude = Production`
 
-Everything else omitted. This reports what would change across every environment except Production, without changing anything. F&O inventory is included, because it always runs and is read-only.
+This reports what would change across every environment except Production, without changing anything. F&O inventory is included, because it always runs and is read-only.
 
 ## Example: inventory everywhere, no version changes
 
 Nothing to configure. This is the default. `finOpsApplyVersion` is `false`, so you get the inventory table and no environment is modified.
 
-## Example: apply versions on the dev estate only
+## Example: apply only proactive quality updates (PQU) on the dev estate
 
 - `finOpsApplyVersion = true`
+- `finOpsUpdateScope = QualityUpdate` (the default; can be omitted)
 - `finOpsEnvironmentFilter = TPM-DEV01, TPM-DEV02, TPM-DEV03`
 
-Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only if their deployment type is in `finOpsDeploymentTypes`.
+Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only when a version staged `QualityUpdate` is actually offered for that environment. If Microsoft has not shipped a same-train patch since the environment's current version, this correctly reports "no PQU version available" rather than applying anything.
 
-Run this with `whatIf = true` first.
+## Example: move onto the next release train deliberately
+
+- `finOpsApplyVersion = true`
+- `finOpsUpdateScope = VersionUpdate`
+
+Use this once you have decided you want to move an environment onto a new release wave (for example 10.0.48 to 10.0.49), rather than waiting for a same-train patch that may never come once the current train is fully caught up.
+
+Run any apply configuration with `whatIf = true` first.
