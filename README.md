@@ -3,7 +3,7 @@
 **Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, and report Finance and Operations environment inventory, from a single Azure DevOps pipeline.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)
-![Version 2.3.0](https://img.shields.io/badge/version-2.3.0-1e90ff)
+![Version 2.4.1](https://img.shields.io/badge/version-2.4.1-1e90ff)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-0b3d91)
 ![Community project](https://img.shields.io/badge/status-community%20project-111827)
 
@@ -24,7 +24,7 @@ If you run Dynamics 365 across more than a couple of environments, you know the 
 
 This project turns that manual chore into a hands-off, repeatable, tenant-wide operation. A service principal authenticates non-interactively, the pipeline discovers every Dataverse environment on the tenant, compares the installed version of each app against the latest available version, and installs the updates that are genuinely newer. It can retry previously failed installs, protect specific environments, skip specific apps, and preview everything without changing a thing.
 
-It also reports a **Finance and Operations inventory** across the tenant: application version, platform version, deployment type and AOS counts for every F&O environment, which makes version drift obvious at a glance.
+It also reports a **Finance and Operations inventory** across the tenant, and can optionally apply F&O application version updates, distinguishing between a same-train quality update and a move to a new release train.
 
 It scales the same whether you have 3 environments or 30, which is exactly where it saves the most time.
 
@@ -54,20 +54,22 @@ Azure DevOps pipeline (azure-pipelines.yml)
         |     managed solution.
         |  4. Per app: skip if in appExclude; retry if state = InstallFailed;
         |     otherwise install ONLY when available is strictly newer.
-        |  5. Apps that require the PPAC Custom Install Experience are
-        |     reported as "manual install required", never as failures.
-        |  6. While doing the above, record which environments have Finance
-        |     and Operations installed. No extra API calls.
+        |  5. The F&O Provisioning App Anchor Solution is excluded here -
+        |     it always fails with Custom Install Experience, and is
+        |     exclusively owned by Phase 2's dedicated route.
         |
    ===== PHASE 2 - Finance and Operations =====
-        |  7. INVENTORY (always runs, read-only, no switch):
+        |  6. INVENTORY (always runs, read-only, no switch):
         |       <- /dynamics/environments/{id}/finopsproperties
-        |  8. VERSION APPLY (finOpsApplyVersion, default OFF, changes things
-        |     - the only F&O switch that exists):
+        |     Reports the LIVE application version, fetched fresh every run.
+        |  7. VERSION APPLY (finOpsApplyVersion, default OFF - the only
+        |     on/off switch that exists):
         |       VERSIONS <- /dynamics/environments/{id}/finopsversions
         |       APPLY    -> POST .../finopsversions/{version}/apply
+        |     finOpsUpdateScope selects WHICH kind of version is eligible,
+        |     matched against Microsoft's OWN releaseStage on each entry.
         |     LCS managed environments are inventoried but never
-        |     version-updated. See the Finance and Operations section.
+        |     version-updated.
         v
    Updated tenant + F&O inventory
 ```
@@ -112,19 +114,21 @@ Full permission setup is in [docs/permissions.md](docs/permissions.md). It is th
 | `ppApiRoot` | `https://api.powerplatform.com` | Power Platform API base URL. |
 | `powerPlatformScope` | `https://api.powerplatform.com/.default` | Token scope for Power Platform. |
 | `authority` | built from `TenantId` | Token endpoint. |
-| `dumpDiagnostics` | `true` | Print installed-vs-available diagnostics. |
+| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail. |
+| `dumpSolutionCatalog` | `false` | Dump the full Dataverse managed-solution catalog (separate from `dumpDiagnostics`; can be 150+ lines). |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install failed. |
 | `whatIf` | `false` | Plan only. Report what would change, change nothing. |
 | `usePacFallback` | `false` | Attempt the PAC CLI for custom-install apps. |
 | `environmentFilter` | (blank = all) | Allow-list of environment names/ids. |
 | `environmentExclude` | (blank = none) | Deny-list of environment names/ids. |
 | `appExclude` | (blank) | Deny-list of app names/ids to always skip. |
-| `finOpsApplyVersion` | `false` | **The only Finance and Operations switch.** Changes environments when true. |
-| `finOpsTargetVersion` | (blank = latest) | Specific F&O version to apply. |
+| `finOpsApplyVersion` | `false` | **The only Finance and Operations on/off switch.** Changes environments when true. |
+| `finOpsUpdateScope` | `QualityUpdate` | Which kind of version apply may select: `QualityUpdate` (PQU, same-train patch), `VersionUpdate` (new release train), or `Any`. Matched against Microsoft's own `releaseStage`. |
+| `finOpsTargetVersion` | (blank = highest matching scope) | Specific F&O version to apply. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | Extra allow-list for the F&O apply phase only. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a version apply. |
 
-`whatIf`, `usePacFallback`, `finOpsApplyVersion` and `finOpsTargetVersion` are also exposed as **runtime parameters**, so you can override them for a single manual run.
+`whatIf`, `usePacFallback`, `finOpsApplyVersion`, `finOpsUpdateScope` and `finOpsTargetVersion` are also exposed as **runtime parameters**, so you can override them for a single manual run.
 
 > Inventory always runs and is read-only; there is no variable for it. Two earlier variable names, `finOpsInventory` and `updateFinOpsVersion`, are retired. If either is still present the script ignores it and logs a one-time warning. See [docs/parameters.md](docs/parameters.md) for details.
 
@@ -142,78 +146,47 @@ Full walkthrough is in [docs/setup.md](docs/setup.md). In short:
 
 ## Finance and Operations
 
-There is a single Finance and Operations variable.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `finOpsApplyVersion` | `false` | The only switch. `false` = inventory only. `true` = also attempt version apply. |
-
-Detection is free: while Phase 1 is already reading each environment's application packages, it records which environments have Finance and Operations installed. Only packages whose state is `Installed` or `InstallFailed` count, so environments that are merely *offered* an F&O package are not misidentified.
+Two variables govern this phase: `finOpsApplyVersion` (the only on/off switch, default `false`) and `finOpsUpdateScope` (which kind of update is eligible, default `QualityUpdate`).
 
 ### Inventory (always on, read-only)
 
-For every detected F&O environment the pipeline reports:
-
-- Application version and platform version
-- Deployment type (`UnifiedDeveloper`, `UnifiedSandbox`, `UnifiedProduction`, `LCSSandbox`, `LCSProduction`)
-- AOS counts, interactive and batch, observed against maximum
-- Demo dataset and any scheduled actions
-
-It then prints a consolidated table so version drift across the estate is obvious:
+For every detected F&O environment the pipeline reports a single compact line, for example:
 
 ```
-Environment       Application   Platform     Deployment       AOS   Note
------------       -----------   --------     ----------       ---   ----
-commerce-code-ppr 10.0.2645.124 7.0.7996.111 LCSSandbox       2 / 2 version apply skipped (LCSSandbox)
-TPM-DEV01         10.0.2645.124 7.0.7996.111 UnifiedDeveloper 1 / 1 versions: RouteNotFound
-TPM-DEV02         10.0.2645.136 7.0.7996.119 UnifiedDeveloper 1 / 1 versions: RouteNotFound
-COMMERCE-CODE     10.0.2790.46  7.0.8199.32  UnifiedSandbox   1 / 9 versions: RouteNotFound
+TPM-DEV04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
 ```
 
-This runs every time, regardless of `finOpsApplyVersion`. With `finOpsApplyVersion = false` the `Note` column always reads `inventory only`.
+Expand the environment's group to see AOS counts, demo dataset, and the F&O Provisioning App Anchor Solution version (shown for reference only). This runs every time, regardless of `finOpsApplyVersion`.
+
+### Update scope: PQU vs. a new release train
+
+`finOpsversions` returns each available version with Microsoft's own `releaseStage` label - for example `{"version":"10.0.48.7","releaseStage":"QualityUpdate"}` alongside `{"version":"10.0.49.2","releaseStage":"GeneralAvailability"}`. `finOpsUpdateScope` filters against this field directly:
+
+| Value | Displayed as | Selects |
+|---|---|---|
+| `QualityUpdate` (default) | **PQU** | Only a same-train patch (Microsoft's own "proactive quality update"). |
+| `VersionUpdate` | **version update** | Only a move to a new release train. |
+| `Any` | - | The numerically highest version, ignoring stage. |
+
+**This does not use the F&O Provisioning App Anchor Solution to classify anything**, and that is a deliberate, hard-won correction. An earlier version did, and it was confirmed live to be unreliable: ten environments sharing the identical live application build reported two different Anchor Solution readings in the same pipeline run. The reason is structural - Microsoft's own automated Unified environment service update rollout does not touch that Dataverse record; only a Dataverse-level solution operation (an environment copy, or an explicit solution import) does. Since the platform already labels each version's `releaseStage` itself, there was never a need for this script to derive that classification from a value that can silently drift from reality.
 
 ### Why apply is a single, off-by-default switch
 
-Version apply is implemented and gated behind a live route check, so it begins working automatically when the `finopsversions` route becomes available on your endpoint.
-
-That is convenient, and it is exactly why it needs to be one explicit, off-by-default variable with nothing else able to enable it. If it were bundled with inventory, or reachable through more than one variable name, then the day the route deploys, anyone who had only enabled the phase for the inventory table would silently start applying application versions on their next scheduled run. With `finOpsApplyVersion` as the sole trigger, that cannot happen: the route becoming available changes nothing until you explicitly set this variable to `true`.
+Version apply is implemented and gated behind a live route check, so it begins working automatically when the `finopsversions` route becomes available on your endpoint. That is exactly why it needs to be one explicit, off-by-default variable with nothing else able to enable it: if it were bundled with inventory, or reachable through more than one variable name, the day the route deploys, anyone who had only enabled the phase for the inventory table would silently start applying application versions on their next scheduled run.
 
 ### LCS managed environments are never version-updated
 
-`LCSSandbox` and `LCSProduction` environments are **inventoried but deliberately excluded from version apply**, because their application updates are driven through Lifecycle Services rather than the Power Platform API. This is controlled by `finOpsDeploymentTypes`, which defaults to the Unified types only.
+`LCSSandbox` and `LCSProduction` environments are **inventoried but deliberately excluded from version apply**, because their application updates are driven through Lifecycle Services rather than the Power Platform API. Controlled by `finOpsDeploymentTypes`, which defaults to the Unified types only.
 
-### Known limitation: the version routes
+### A known platform behaviour worth expecting
 
-Version discovery and apply are implemented against the documented Power Platform API:
-
-```
-GET  {ppApiRoot}/dynamics/environments/{environmentId}/finopsversions?api-version=2024-10-01
-POST {ppApiRoot}/dynamics/environments/{environmentId}/finopsversions/{version}/apply?api-version=2024-10-01
-```
-
-At the time of writing, on a tenant in West Europe using an app-only (client credentials) token, the observed behaviour is:
-
-| Route | Result |
-|---|---|
-| `finopsproperties` | **HTTP 200** with full data |
-| `finopsversions` | HTTP 404 `RouteNotFound` |
-| `finopsversions/{version}/apply` | HTTP 404 `RouteNotFound` |
-
-Because `finopsproperties` succeeds on the identical call shape, the token, the environment id and the api-version are all accepted. The `finopsversions` leaf and its `apply` sub-route simply do not resolve on that endpoint.
-
-This has been confirmed through **two independent methods**, both constructing the identical request URL: hand-built REST calls, and Microsoft's own `pac dynamics` CLI (`get-fin-ops-versions` and `apply-fin-ops-version`). Both fail identically, which rules out any client-side mistake in headers, auth flow, or request construction.
-
-**What this means in practice:**
-
-- **Inventory works.** That is the useful capability available today, and it always runs.
-- **Version apply does not run** while the route returns `RouteNotFound`. It is reported factually per environment and is **not** counted as a failure.
-- **No code change will be needed.** When the route becomes available on your endpoint, the next run with `finOpsApplyVersion` set to `true` starts using it automatically.
+The `finopsversions` route has been observed to intermittently return HTTP 404 `RouteNotFound` on one run and a genuine HTTP 200 with real data on another, for the identical environment, token, and api-version, with no configuration change in between. This is reported factually per environment and is **not** counted as a script failure - it reflects the state of the platform at the moment of the call, not a defect in this project. If you see it, simply re-run.
 
 ## How to run
 
 - **Manual:** run the pipeline and, if you like, flip the runtime parameters for that run.
 - **First run:** set `whatIf` to `true` so it reports without changing anything.
-- **Scheduled:** uncomment the `schedules` block in `azure-pipelines.yml`. Decide deliberately whether `finOpsApplyVersion` should be on for an unattended run.
+- **Scheduled:** uncomment the `schedules` block in `azure-pipelines.yml`. Decide deliberately whether `finOpsApplyVersion` should be on, and whether `finOpsUpdateScope` should stay at `QualityUpdate` or widen to `VersionUpdate`, for an unattended run.
 
 ## Pipelines in this repo
 
@@ -251,13 +224,13 @@ Worked examples are in [docs/parameters.md](docs/parameters.md).
 
 ## Custom Install Experience apps
 
-Some first-party apps, notably the Finance and Operations Provisioning App, use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The script detects the API's "Custom Install Experience" response and reports those apps as **manual install required** in a summary table rather than failing the run. Add them to `appExclude` if you prefer to silence them entirely.
+Some first-party apps use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The script detects the API's "Custom Install Experience" response and reports those apps as **manual install required** in a summary table rather than failing the run. Add them to `appExclude` if you prefer to silence them entirely. The F&O Provisioning App Anchor Solution is a special case of this and is excluded from Phase 1 entirely, since it is exclusively handled by the Finance and Operations phase.
 
 ## Known limitations and roadmap
 
 - Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions.
 - Available versions depend on what the tenant's release channel exposes.
-- F&O version apply depends on the `finopsversions` route being available on your endpoint. See [Finance and Operations](#finance-and-operations).
+- The `finopsversions` route has observed intermittent availability. See above.
 - LCS managed environments are inventoried only, by design.
 - Install operations are triggered but not polled to completion. The run reports the operation id and moves on.
 - Roadmap ideas: install completion polling, per-environment approval gates, Teams or email summary notification, parallel installs, and a dry-run report artifact.
