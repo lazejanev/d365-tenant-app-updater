@@ -24,73 +24,43 @@
          environments are excluded (updated via Lifecycle Services, not
          this API).
          FinOpsUpdateScope (default QualityUpdate) restricts which KIND of
-         available version may be selected, using Microsoft's own
-         releaseStage label on each version - see v2.4.0 notes.
+         available version may be selected - see v2.4.2 notes.
 
 .NOTES
+    v2.4.2
+      - CRITICAL FIX. With FinOpsUpdateScope = QualityUpdate, v2.4.0 and
+        v2.4.1 moved environments to a NEW release train. Confirmed live:
+        ten environments on 10.0.48 were updated to 10.0.49.3, because
+        finopsversions offered 10.0.49.3 staged "QualityUpdate".
+        releaseStage describes the build itself (a quality update on the
+        10.0.49 train), NOT its relationship to the environment's current
+        train. v2.4.0 wrongly treated it as the latter.
+      - QualityUpdate now requires BOTH: releaseStage = QualityUpdate AND
+        the same release train (3rd version segment, e.g. 48) as the
+        environment's current train.
+        VersionUpdate now means: a higher release train than the current
+        one, regardless of releaseStage.
+        Any is unchanged.
+      - The current release train is read from the 3rd segment of the F&O
+        Provisioning App Anchor Solution version. Its PATCH digit is known
+        to lag, but this check only uses the TRAIN. If the train cannot be
+        determined, the apply is SKIPPED (fail-safe) unless scope is Any.
+      - Known limitation: the Anchor Solution is not updated by every
+        update path. If an environment has moved to a new train but its
+        Anchor Solution still shows the old train, QualityUpdate will
+        skip that environment (no update) rather than guess. This fails
+        safe: it can miss a patch, it can never jump a release.
+
     v2.4.1
-      - Wording only, no logic change. Scope-related messages now use
-        Microsoft's own public terminology: "PQU" (proactive quality
-        update) instead of the internal "QualityUpdate" enum value, and
-        "version update" instead of "VersionUpdate", via a small
-        Get-FinOpsScopeLabel helper. Every "[stage]" bracket in a headline
-        is now "[Status: stage]" for clarity, and the diagnostic line that
-        lists what is available is now labeled "New version available"
-        rather than the bare "Available". None of this affects the
-        releaseStage matching logic itself.
+      - Wording only: "PQU" / "version update" labels, "[Status: x]"
+        brackets, "New version available" diagnostic label.
 
     v2.4.0
-      - REMOVED all classification logic based on the F&O Provisioning App
-        Anchor Solution (Get-FinOpsVersionChangeType, and every message
-        that referenced "Anchor Solution" as a basis for a decision).
-        Confirmed live, across ten environments in one run: every one of
-        them shares the IDENTICAL live application build (10.0.2645.136),
-        yet their Anchor Solution readings split into two different, wrong
-        values (10.0.48.6 and 10.0.48.7). This is not a timing lag - it is
-        that the Anchor Solution's version in Dataverse is only set when a
-        Dataverse-level solution operation touches it (an environment copy
-        from an already-updated source, or an explicit solution import),
-        and is NOT updated by Microsoft's own automated Unified
-        environment service update rollout, which is how these
-        environments actually get updated in practice. The Anchor Solution
-        was therefore never a safe basis for deciding what kind of update
-        is available, and this script no longer uses it for that purpose
-        at all.
-      - REPLACED it with Microsoft's own releaseStage field, present on
-        every entry returned by finopsversions (confirmed in a raw
-        response captured earlier this session: {"version":"10.0.48.7",
-        "releaseStage":"QualityUpdate"}, alongside a second entry staged
-        "GeneralAvailability"). This field is the platform's own
-        classification of each version, computed against the environment's
-        true live state - there is nothing left for this script to derive
-        or guess. FinOpsUpdateScope now matches directly against it:
-          QualityUpdate  -> only versions staged QualityUpdate
-          VersionUpdate  -> only versions NOT staged QualityUpdate
-          Any            -> every version, ignoring stage
-      - REWROTE all Finance and Operations log output to be dramatically
-        shorter, in direct response to feedback that the previous format
-        repeated the same explanatory sentence in full on every single
-        environment line, making 13 environments unreadable at a glance.
-        Explanatory text now appears ONCE, in a short legend printed at
-        the start of the Finance and Operations section. Per-environment
-        output is now one compact headline (also the collapsible group's
-        label, so it is visible even collapsed) with no repeated prose.
-      - The Anchor Solution figure is still shown, but only as a single,
-        clearly-labeled, non-decisive diagnostic value under
-        DumpDiagnostics, never in a headline, and never used to accept,
-        reject, or classify anything.
-
-    v2.3.9 (superseded by v2.4.0 above)
-      - Had kept the Anchor Solution as the classification reference,
-        merely labeling it as "can lag". Live data now shows the problem
-        is structural, not a lag, for environments updated by Microsoft's
-        own automated rollout rather than a Dataverse solution operation -
-        so labeling it as potentially stale was insufficient; it needed to
-        be removed from the decision path entirely.
-
-    v2.3.8
-      - Collapsible ##[group] per environment, with the group's label set
-        to the headline so Azure DevOps shows the outcome even collapsed.
+      - Removed Anchor-Solution-based patch comparison and matched scope
+        against releaseStage only. This was WRONG for QualityUpdate scope
+        (see v2.4.2) and is corrected above.
+      - Shorter Finance and Operations output: one headline per
+        environment, explanation printed once.
 
     v2.3.5
       - The F&O Provisioning App Anchor Solution is excluded from Phase
@@ -140,11 +110,10 @@ param(
     [Parameter()] [string] $FinOpsEnvironmentFilter = '',
     [Parameter()] [string] $FinOpsDeploymentTypes   = '',
 
-    # Restricts WHICH KIND of available version apply may select, matched
-    # against Microsoft's own releaseStage label on each version:
-    #   QualityUpdate (default) - only versions staged QualityUpdate
-    #   VersionUpdate           - only versions NOT staged QualityUpdate
-    #   Any                     - numerically highest, ignoring stage
+    # Restricts WHICH KIND of available version apply may select:
+    #   QualityUpdate (default) - releaseStage QualityUpdate AND same release train
+    #   VersionUpdate           - a higher release train than the current one
+    #   Any                     - numerically highest, ignoring stage and train
     [Parameter()] [string] $FinOpsUpdateScope       = ''
 )
 
@@ -531,10 +500,7 @@ function Get-FinOpsMarkerPackage {
     return $null
 }
 
-# Returns an array of [pscustomobject]@{ Version; ReleaseStage } - the
-# releaseStage is Microsoft's OWN classification of each version, read
-# directly from the response, not derived by this script. An entry with
-# no releaseStage field gets 'Unknown' rather than being guessed at.
+# Returns an array of [pscustomobject]@{ Version; ReleaseStage }.
 function ConvertTo-FinOpsVersionList {
     param($Json)
     if ($null -eq $Json) { return @() }
@@ -561,10 +527,17 @@ function ConvertTo-FinOpsVersionList {
     return $out
 }
 
-# Friendly label for a scope value, matching Microsoft's own terminology
-# for these releases (PQU = "proactive quality update", the term used on
-# https://learn.microsoft.com/.../quality-updates-schedule). Used only in
-# display text; the actual filtering still matches releaseStage exactly.
+# Release train = 3rd segment of a release-scheme version (48 in 10.0.48.7).
+# Returns $null when the version is not in the 10.0.<train>.<patch> shape
+# (for example the 1.0.x anchors seen on LCS environments).
+function Get-FinOpsTrain {
+    param([AllowEmptyString()] [string] $Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return $null }
+    if ($Version -match '^10\.0\.(\d+)\.\d+') { return [int]$Matches[1] }
+    return $null
+}
+
+# Display label for a scope value, matching Microsoft's public terminology.
 function Get-FinOpsScopeLabel {
     param([string] $Scope)
     switch ($Scope) {
@@ -712,7 +685,7 @@ $solDumped = $false
 $manualList         = @()
 $adminModeList      = @()
 $finOpsDetected     = @()
-$finOpsAnchorVersions = @{}   # envId -> Anchor Solution version. Diagnostic only - see v2.4.0. NEVER used to accept/reject/classify anything.
+$finOpsAnchorVersions = @{}   # envId -> Anchor Solution version. Only its release TRAIN is used (v2.4.2).
 
 # ===================== PHASE 1: application updates =====================
 foreach ($envObj in $environments) {
@@ -865,10 +838,12 @@ foreach ($envObj in $environments) {
 
 # ======= PHASE 2: Finance and Operations inventory and version apply =======
 #
-# v2.4.0: classification uses Microsoft's own releaseStage label on each
-# finopsversions entry - not the Anchor Solution, which has been confirmed
-# unreliable (see the top of this file). Output is one compact line per
-# environment; the explanation below is printed ONCE rather than repeated.
+# v2.4.2: scope is decided by releaseStage AND release train together.
+#   QualityUpdate = releaseStage QualityUpdate AND same train as current
+#   VersionUpdate = a higher train than current
+#   Any           = no restriction
+# The current train comes from the Anchor Solution's 3rd version segment.
+# If it cannot be determined, apply is skipped unless scope is Any.
 
 function Complete-FoEnvironment {
     param(
@@ -906,6 +881,7 @@ $foNotEligible  = 0
 $foNoVersions   = 0
 $foRouteMissing = 0
 $foScopeFiltered = 0
+$foTrainUnknown = 0
 
 if ($optDoFinOps) {
     try {
@@ -930,8 +906,8 @@ if ($optDoFinOps) {
                 $tgtLabel = '(highest matching scope)'
                 if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
                 Write-Host ("Environments: " + (Get-Count $foTargets) + " | Apply enabled | Scope: " + $optFinOpsScope + " | Target: " + $tgtLabel)
-                Write-Host "Scope is matched against Microsoft's own releaseStage on each available version (QualityUpdate = PQU, a same-train patch; anything else = a new version update / release train)."
-                Write-Host "A version is applied only when the apply call itself returns 202; a 204 means the platform confirms nothing is needed. No other check decides this."
+                Write-Host "PQU (QualityUpdate) = releaseStage QualityUpdate on the SAME release train as the environment (e.g. 10.0.48.x stays on 10.0.48). Version update = a HIGHER release train. If the current train cannot be determined, the apply is skipped."
+                Write-Host "A version is applied only when the apply call itself returns 202; a 204 means the platform confirms nothing is needed."
             }
             else {
                 Write-Host ("Environments: " + (Get-Count $foTargets) + " | Inventory only (set finOpsApplyVersion = true to enable apply)")
@@ -944,6 +920,7 @@ if ($optDoFinOps) {
                 $envIdFo   = [string]$envObj.Id
                 $anchorVer = $null
                 if ($finOpsAnchorVersions.ContainsKey($envIdFo)) { $anchorVer = $finOpsAnchorVersions[$envIdFo] }
+                $curTrain  = Get-FinOpsTrain -Version $anchorVer
 
                 $propUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsproperties'
                 $pr = Invoke-PpRest -Method 'GET' -RequestUri $propUri -Headers $ppHeaders
@@ -971,13 +948,15 @@ if ($optDoFinOps) {
                     if ($pr.Json.scheduledActions) { $sched = @($pr.Json.scheduledActions) }
                 }
 
-                # Anchor Solution shown only as a labeled diagnostic value,
-                # never used in any decision. See v2.4.0 notes.
+                $trainLabel = 'unknown'
+                if ($null -ne $curTrain) { $trainLabel = '10.0.' + $curTrain }
+
                 $diag = @()
                 if ($aosBatch -ne '') { $diag += ('AOS (batch)     : ' + $aosBatch) }
                 if ($demo     -ne '') { $diag += ('Demo dataset    : ' + $demo) }
                 if ((Get-Count $sched) -gt 0) { $diag += ('Scheduled       : ' + (Get-Count $sched)) }
-                if ($anchorVer) { $diag += ('Anchor Solution : ' + $anchorVer + '  (Dataverse record only, not used for any decision here)') }
+                if ($anchorVer) { $diag += ('Anchor Solution : ' + $anchorVer + '  (only its release train is used)') }
+                $diag += ('Current train   : ' + $trainLabel)
 
                 if (-not $optDoApply) {
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
@@ -1033,20 +1012,34 @@ if ($optDoFinOps) {
                 $availLabel = (($available | ForEach-Object { $_.Version + ' [Status: ' + $_.ReleaseStage + ']' }) -join ', ')
                 $diag += ('New version available : ' + $availLabel)
 
-                # Scope filter, matched directly against Microsoft's own
-                # releaseStage - no derived classification of any kind.
+                # ---------- Scope filter (v2.4.2: stage AND train) ----------
                 $scoped = $available
-                if ($optFinOpsScope -eq 'QualityUpdate') {
-                    $scoped = @($available | Where-Object { $_.ReleaseStage -ieq 'QualityUpdate' })
-                }
-                elseif ($optFinOpsScope -eq 'VersionUpdate') {
-                    $scoped = @($available | Where-Object { $_.ReleaseStage -ine 'QualityUpdate' })
+                if ($optFinOpsScope -ne 'Any') {
+                    if ($null -eq $curTrain) {
+                        $foTrainUnknown++
+                        Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
+                            -Headline ($curVer + " (" + $depType + ") - current release train unknown, apply skipped (fail-safe). New version available: " + $availLabel) `
+                            -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
+                            -Note 'train unknown, apply skipped'
+                        continue
+                    }
+                    if ($optFinOpsScope -eq 'QualityUpdate') {
+                        $scoped = @($available | Where-Object {
+                            ($_.ReleaseStage -ieq 'QualityUpdate') -and ((Get-FinOpsTrain -Version $_.Version) -eq $curTrain)
+                        })
+                    }
+                    else {
+                        $scoped = @($available | Where-Object {
+                            $t = Get-FinOpsTrain -Version $_.Version
+                            ($null -ne $t) -and ($t -gt $curTrain)
+                        })
+                    }
                 }
                 if ($optFinOpsScope -ne 'Any' -and (Get-Count $scoped) -eq 0) {
                     $foScopeFiltered++
                     $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ") - no " + $scopeLabel + " version available. New version available: " + $availLabel) `
+                        -Headline ($curVer + " (" + $depType + ") - no " + $scopeLabel + " version available for " + $trainLabel + ". New version available: " + $availLabel) `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('no ' + $scopeLabel + ' version available')
                     continue
@@ -1069,13 +1062,13 @@ if ($optDoFinOps) {
                         continue
                     }
                     $targetStage = $match.ReleaseStage
-                    if ($optFinOpsScope -ne 'Any' -and ($scoped.Version -notcontains $target)) {
+                    if ($optFinOpsScope -ne 'Any' -and (@($scoped | ForEach-Object { $_.Version }) -notcontains $target)) {
                         $foScopeFiltered++
                         $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " -> requested '" + $target + "' [Status: " + $targetStage + "] is not a " + $scopeLabel + ".") `
+                            -Headline ($curVer + " -> requested '" + $target + "' [Status: " + $targetStage + "] is not a " + $scopeLabel + " for " + $trainLabel + ".") `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
-                            -Note ('target exists but is ' + $targetStage + ', not ' + $optFinOpsScope)
+                            -Note ('target exists but is not a ' + $scopeLabel)
                         continue
                     }
                 }
@@ -1153,6 +1146,7 @@ if ($optDoFinOps -and (Get-Count $finOpsDetected) -gt 0) {
         if ($foNotEligible   -gt 0) { Write-Host "  skipped (deployment type):   $foNotEligible" }
         if ($foRouteMissing  -gt 0) { Write-Host "  skipped (route unavailable): $foRouteMissing" }
         if ($foNoVersions    -gt 0) { Write-Host "  skipped (no versions listed):$foNoVersions" }
+        if ($foTrainUnknown  -gt 0) { Write-Host "  skipped (train unknown):     $foTrainUnknown" }
         if ($foScopeFiltered -gt 0) { Write-Host "  skipped (no scope match):    $foScopeFiltered" }
         if ($foFailed        -gt 0) { Write-Host "  failed:                      $foFailed" }
     }
@@ -1160,7 +1154,7 @@ if ($optDoFinOps -and (Get-Count $finOpsDetected) -gt 0) {
         Write-Host "Version apply:                  off (set finOpsApplyVersion = true)"
     }
 }
-else {
+elseif (-not $optDoFinOps) {
     Write-Host "F&O phase:                      skipped (PowerShell 7 required)"
 }
 
