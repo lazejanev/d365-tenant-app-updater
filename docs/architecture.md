@@ -25,7 +25,7 @@ Nothing is stored between runs. Every run reads the tenant fresh, so there is no
 
 - **Plan** reads every environment A to Z and decides everything up front. It changes nothing and publishes `plan.json`, `summary.md` and `report.json`.
 - **Apply non-production** and **Apply production** each take their part of the plan. Before every action they re-check the live tenant and the current settings, so a plan that waited for an approval never installs something different from what was approved.
-- The stages are the same on both platforms: `pipelines/templates/updater-stages.yml` (Azure DevOps) and `.github/workflows/tenant-app-updater.yml` (GitHub). Production approval is optional on both: on Azure DevOps by naming an environment you created (`productionApprovalEnvironment`), on GitHub through the `d365-production` environment's required reviewers.
+- The stages are the same on both platforms: `pipelines/templates/stages.yml` (Azure DevOps) and `.github/workflows/tenant-app-updater.yml` (GitHub). Production approval is optional on both: on Azure DevOps by naming an environment you created (`productionApprovalEnvironment`), on GitHub through the `d365-production` environment's required reviewers.
 - A local or single-stage run (`-Mode PlanAndApply`, the default) does all three in one process.
 
 ## 3. Production ring
@@ -52,7 +52,7 @@ Non-production updates as soon as Microsoft offers something ("test and break fa
 | `Host.ps1` | The only file that knows Azure DevOps from GitHub: colours, groups, warnings, outputs, run result. |
 | `Http.ps1` | The only HTTP caller. Never throws; retries GET on 429/503; never retries a POST. |
 
-**Collect, decide, act.** Decisions are plain functions of collected data. That is what lets the production ring look at every environment before deciding any of them, keeps the order A to Z independent of the API's order, and lets 129 tests run against a fake tenant without contacting Microsoft.
+**Collect, decide, act.** Decisions are plain functions of collected data. That is what lets the production ring look at every environment before deciding any of them, keeps the order A to Z independent of the API's order, and lets 138 tests run against a fake tenant without contacting Microsoft.
 
 ## 5. App decision
 

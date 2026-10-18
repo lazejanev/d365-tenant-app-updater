@@ -7,7 +7,7 @@ Two pipelines are included. Pick one:
 | Pipeline | Sign-in | Status |
 |---|---|---|
 | `azure-pipelines.yml` | Client secret in the variable group | Recommended start |
-| `azure-pipelines-federated.yml` | Workload identity federation: no secret stored anywhere | Preview: verify with a Plan-only run first ([section 9](#federated-sign-in-preview)) |
+| `pipelines/azure-pipelines-federated.yml` | Workload identity federation: no secret stored anywhere | Preview: verify with a Plan-only run first ([section 9](#federated-sign-in-preview)) |
 
 Both run the same three stages:
 
@@ -28,7 +28,7 @@ Read [permissions.md](permissions.md) alongside this guide. The permissions step
 - Leave the redirect URI empty. This is an app-only (client credentials) flow.
 - Register the app.
 - Note the **Application (client) ID** and the **Directory (tenant) ID**.
-- Go to **Certificates & secrets > New client secret**, create one, and copy the value now. You cannot read it again later. (Skip this for `azure-pipelines-federated.yml`.)
+- Go to **Certificates & secrets > New client secret**, create one, and copy the value now. You cannot read it again later. (Skip this for `pipelines/azure-pipelines-federated.yml`.)
 
 ## 2. Grant permissions and register as a management app
 
@@ -82,7 +82,7 @@ By default **Apply: production** is a normal job, so production follows automati
 
 1. **Pipelines > Environments > New environment**: name it, for example `d365-production`, Resource **None**, Create. Create it here first: Azure DevOps does not create environments for YAML that arrives through a git sync, and a run that names a missing environment fails before it starts ("Environment ... could not be found").
 2. In the environment: **Approvals and checks > + > Approvals**, add the approvers, Create.
-3. In `azure-pipelines.yml` (or `azure-pipelines-federated.yml`), set the default of the `productionApprovalEnvironment` parameter to that name, or pick it at queue time.
+3. In `azure-pipelines.yml` (or `pipelines/azure-pipelines-federated.yml`), set the default of the `productionApprovalEnvironment` parameter to that name, or pick it at queue time.
 4. On the first run, permit the pipeline to use the environment when Azure DevOps asks.
 
 **Apply: production** then runs as a deployment to that environment and waits for approval. With `sync-from-github.yml` in `reset` mode your YAML edit is overwritten by the next sync, so either choose the environment at queue time, use `ff-only`, or keep the change on your own branch.
@@ -178,7 +178,7 @@ If you want the pipeline to attempt a PAC CLI install for custom-install apps:
 
 - Set the **Try PAC CLI fallback** dropdown to `true`, or add `usePacFallback = true`.
 - When the fallback is on, the pipeline automatically installs the `Microsoft.PowerApps.CLI.Tool` .NET tool on the agent.
-- The fallback signs in with the client secret, so it is ignored (with a warning) in `azure-pipelines-federated.yml`.
+- The fallback signs in with the client secret, so it is ignored (with a warning) in `pipelines/azure-pipelines-federated.yml`.
 
 The script tries `pac app-management install-application-package` first and falls back to the legacy `pac application install`. The fallback authenticates with the same service principal. It is best effort: for apps that genuinely require the Power Platform Admin Center wizard it may still be blocked, in which case the app is reported as manual install required.
 
@@ -194,17 +194,17 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 
 ## 9. Federated sign-in (preview)
 
-`azure-pipelines-federated.yml` signs in without a client secret. The pipeline requests a short-lived OIDC token for a service connection, and Microsoft Entra ID exchanges it for an access token of the same app registration. This pipeline is **preview**: the token exchange is the documented Azure DevOps mechanism, but run it with **Plan only** first to confirm it in your organization.
+`pipelines/azure-pipelines-federated.yml` signs in without a client secret. The pipeline requests a short-lived OIDC token for a service connection, and Microsoft Entra ID exchanges it for an access token of the same app registration. This pipeline is **preview**: the token exchange is the documented Azure DevOps mechanism, but run it with **Plan only** first to confirm it in your organization.
 
 1. **Create the service connection.** Project settings > Service connections > New > **Azure Resource Manager** > **Workload identity federation (manual)**.
-   - Name it `d365-tenant-app-updater-wif` (or change `serviceConnection` at the top of `azure-pipelines-federated.yml`).
+   - Name it `d365-tenant-app-updater-wif` (or change `serviceConnection` at the top of `pipelines/azure-pipelines-federated.yml`).
    - Use the **same app registration** as the updater: its Application (client) ID and Directory (tenant) ID.
    - Pick a subscription the app can read (give it **Reader** on that subscription if it has no role yet). The updater does not use Azure resources, but the `AzureCLI@2` task signs in to that subscription before it runs the script, and fails if the app has no access to it.
    - Azure DevOps shows an **Issuer** and a **Subject identifier**. Keep the page open.
 2. **Add the federated credential.** Entra ID > App registrations > the app > **Certificates & secrets > Federated credentials > Add credential** > **Other issuer**. Paste the Issuer and Subject identifier. Audience: `api://AzureADTokenExchange`. Save.
 3. Finish the service connection in Azure DevOps (Verify and save).
 4. **Find the service connection ID.** Open the service connection; the ID is the `resourceId` value in the browser's address bar. Add it to the variable group as `serviceConnectionId`.
-5. Add the pipeline from `azure-pipelines-federated.yml` and authorize it to use the variable group and the service connection.
+5. Add the pipeline from `pipelines/azure-pipelines-federated.yml` and authorize it to use the variable group and the service connection.
 6. Run with **Plan only** = `true`. The log shows `Sign-in : Federated (AzureDevOps OIDC)`.
 
 Keep `ClientId` and `TenantId` in the variable group. (The task may also expose the service connection's identity, which the updater uses as a fallback, but do not rely on it.) The `ClientSecret` variable is not used and can be deleted from the group once the federated pipeline works.

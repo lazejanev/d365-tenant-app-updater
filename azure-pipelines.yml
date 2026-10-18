@@ -18,7 +18,7 @@
 #   ClientId, ClientSecret (secret), TenantId
 # Everything else is optional; see docs/parameters.md.
 #
-# No client secret? Use azure-pipelines-federated.yml (workload identity
+# No client secret? Use pipelines/azure-pipelines-federated.yml (workload identity
 # federation, preview). Setup: docs/setup-azure-devops.md
 # =====================================================================
 
@@ -113,7 +113,7 @@ variables:
     value: ${{ parameters.finOpsTargetVersion }}
 
 stages:
-  - template: pipelines/templates/updater-stages.yml
+  - template: pipelines/templates/stages.yml
     parameters:
       auth: secret
       whatIf: ${{ parameters.whatIf }}

@@ -54,7 +54,7 @@ function Resolve-AuthMode {
         'Federated' {
             if ($fedSource -eq '') {
                 throw ('authMode is Federated, but no OIDC token source was found. On GitHub add "permissions: id-token: write" to the job. ' +
-                       'On Azure DevOps use azure-pipelines-federated.yml with a workload identity federation service connection and set serviceConnectionId.')
+                       'On Azure DevOps use pipelines/azure-pipelines-federated.yml with a workload identity federation service connection and set serviceConnectionId.')
             }
             return [pscustomobject]@{ Mode = 'Federated'; Source = $fedSource }
         }

@@ -42,7 +42,7 @@ Non-production environments update as soon as something is available, so you tes
 - **A to Z.** Environments and apps are processed and reported alphabetically, numbers in numeric order (Dev2 before Dev10), the same on every agent.
 - **A results board.** The log ends with one colour-coded line per app, grouped by environment; the run page shows the same with counters.
 - **Architecture diagrams.** [docs/architecture.md](docs/architecture.md).
-- **Tested.** 129 automated tests on every change, no tenant required.
+- **Tested.** 138 automated tests on every change, no tenant required.
 
 Full list: [CHANGELOG.md](CHANGELOG.md).
 
@@ -88,7 +88,7 @@ Full permission setup is in [docs/permissions.md](docs/permissions.md). It is th
 
 | Platform | Guide | Sign-in |
 |---|---|---|
-| Azure DevOps | [docs/setup-azure-devops.md](docs/setup-azure-devops.md) | Client secret (`azure-pipelines.yml`), or workload identity federation (`azure-pipelines-federated.yml`, preview) |
+| Azure DevOps | [docs/setup-azure-devops.md](docs/setup-azure-devops.md) | Client secret (`azure-pipelines.yml`), or workload identity federation (`pipelines/azure-pipelines-federated.yml`, preview) |
 | GitHub Actions | [docs/setup-github.md](docs/setup-github.md) | OpenID Connect, client secret as backup |
 
 In short:
@@ -184,12 +184,14 @@ The `finopsversions` route has been observed to intermittently return HTTP 404 `
 | File | Platform | What it does |
 |---|---|---|
 | `azure-pipelines.yml` | Azure DevOps | The updater, client-secret sign-in. Plan, Apply non-production, Apply production. |
-| `azure-pipelines-federated.yml` | Azure DevOps | The same, with workload identity federation (preview). |
-| `pipelines/templates/*.yml` | Azure DevOps | Stages and steps shared by both. |
+| `pipelines/azure-pipelines-federated.yml` | Azure DevOps | The same, with workload identity federation (preview). |
+| `pipelines/templates/` | Azure DevOps | `stages.yml` (the three stages) and `run-updater.yml` (the steps of one job), shared by both Azure DevOps pipelines. |
 | `sync-from-github.yml` | Azure DevOps | Optional. Keeps an Azure DevOps copy in step with the **latest GitHub release** (or `main`). Weekly, Mondays 06:00 UTC. Needs Contribute (and Force push for `reset`) for the build service on the repository, per project. |
 | `.github/workflows/tenant-app-updater.yml` | GitHub | The updater: plan, apply-nonproduction, apply-production. |
 | `.github/workflows/ci.yml` | GitHub | Tests, PSScriptAnalyzer and YAML checks on every pull request. |
 | `.github/workflows/release.yml` | GitHub | Publishes a GitHub release when a version tag is pushed. |
+
+The root holds only what a platform requires there: `azure-pipelines.yml` and `sync-from-github.yml` stay at the root because existing Azure DevOps pipelines point at those paths, and GitHub only reads `.github/workflows/`. Everything else has one home: Azure DevOps in `pipelines/`, the module in `src/`, the entry point in `scripts/`, tests in `tests/`, documentation in `docs/`.
 
 ### What each run produces
 
@@ -230,7 +232,7 @@ Some first-party apps use a guided wizard in the Power Platform Admin Center and
 - F&O version applies run for hours; the run triggers them and the next run verifies them.
 - `finopsversions` has shown intermittent `RouteNotFound` responses. See above.
 - LCS managed environments are inventoried only, by design.
-- `azure-pipelines-federated.yml` is preview until confirmed in more organizations.
+- `pipelines/azure-pipelines-federated.yml` is preview until confirmed in more organizations.
 
 ## Contributing
 
