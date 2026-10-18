@@ -60,7 +60,8 @@ The F&O phase has **one on/off switch** (`finOpsApplyVersion`) and **one scope c
 | `finOpsTargetVersion` | (blank = highest matching scope) | A specific F&O application version to apply, for example `10.0.49.3`. Blank selects the highest version that matches `finOpsUpdateScope` per environment. A named version is still checked against the scope (unless scope is `Any`) and reported if it doesn't match. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list applied to the F&O phase only, on top of `environmentFilter` and `environmentExclude`. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a **version apply**. Inventory is always collected regardless. LCS types are excluded by default. |
-| `finOpsBuildTrainMap` | (blank = built-in map) | Extra live-build-prefix to release-train entries, comma-separated: `10.0.2900=50` (or `10.0.2900=10.0.50`). Added to, and overriding, the built-in map. Malformed entries are ignored with a warning. See "Where the current train comes from" below. |
+| `finOpsScheduleUrl` | Microsoft's PQU schedule (public source of the Learn page) | Where the release map is downloaded from at the start of the F&O phase. `none` disables the download, leaving the built-in map only. You never need to set this. |
+| `finOpsBuildTrainMap` | (blank) | **Emergency override only.** Comma-separated `10.0.<build>=<train>` entries (e.g. `10.0.2900=50` or `10.0.2900=10.0.50`), applied on top of everything else. Not needed in normal use. Malformed entries are ignored with a warning. |
 
 #### How scope is decided
 
@@ -80,7 +81,9 @@ Each entry returned by `finopsversions` carries Microsoft's `releaseStage`, for 
 | 10.0.48 Release-7 | 10.0.2645.147 | 10.0.48.8 |
 | 10.0.49 Release-1 | 10.0.2790.83 | 10.0.49.3 |
 
-Built-in map:
+**The map is built automatically.** At the start of the F&O phase, every run downloads Microsoft's schedule and reads every row shaped like `10.0.49 PQU-1 ... 10.0.2790.83`, giving build prefix `10.0.2790` = 10.0.49. The log prints the result, e.g. "Release map from Microsoft's PQU schedule (30 PQU rows): ...". When Microsoft publishes a new release, the next run picks it up. Nothing has to be maintained.
+
+Built-in **fallback**, used only when the schedule cannot be downloaded or parsed (the log then shows a warning):
 
 | Build prefix | Release train |
 |---|---|
@@ -89,9 +92,9 @@ Built-in map:
 | `10.0.2645` | 10.0.48 |
 | `10.0.2790` | 10.0.49 |
 
-When a new release ships, read its build prefix from that page and add it, for example `finOpsBuildTrainMap = 10.0.2900=50`. The effective map is printed in the **Effective settings** block of every run.
+Order of precedence: built-in fallback, then Microsoft's schedule, then the optional `finOpsBuildTrainMap` override. A build that the schedule lists under two different releases is treated as unknown.
 
-**Fail-safe rule.** If the current train cannot be determined (no `applicationVersion`, or a build prefix that is not in the map), the apply is **skipped** for that environment, unless the scope is `Any`. The log line names the prefix to add, for example "current release train unknown (build prefix 10.0.2900 is not in the build -> train map; add it to finOpsBuildTrainMap ...)".
+**Fail-safe rule.** If the current train cannot be determined (no `applicationVersion`, a build Microsoft's schedule does not list yet, or an ambiguous build), the apply is **skipped** for that environment, unless the scope is `Any`. The log reads, for example, "current release train unknown (build 10.0.2900.x is not in Microsoft's PQU schedule or the built-in map yet)".
 
 **Lower-train guard (every scope, including `Any`).** A version on a lower train than the live build is never applied, whether picked automatically or set in `finOpsTargetVersion`. Microsoft documents that the PPAC version list for an environment only contains versions later than the one installed (see [Update the Finance and Operations Provisioning app](https://learn.microsoft.com/power-platform/admin/unified-experience/tutorial-update-finance-operations-provisioning-app)); this guard enforces the part the script can verify itself.
 

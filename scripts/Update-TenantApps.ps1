@@ -27,6 +27,21 @@
          available version may be selected - see v2.4.2 and v2.4.3 notes.
 
 .NOTES
+    v2.4.4
+      - The build -> release-train map is now built AUTOMATICALLY on every
+        run from Microsoft's published PQU release schedule (the public
+        source of learn.microsoft.com's "Release schedule for proactive
+        quality updates", rows like "10.0.49 PQU-1 ... 10.0.2790.83").
+        When Microsoft ships a new release, the next run picks it up.
+        Nothing has to be maintained.
+      - If the schedule cannot be downloaded or parsed, the built-in map
+        (10.0.46 to 10.0.49) is used and the log says so. An environment on
+        a release that is still unknown is skipped, never guessed.
+      - A prefix that the schedule maps to two different releases is
+        dropped (ambiguous = unknown = skipped).
+      - FinOpsBuildTrainMap is now an optional emergency override only.
+      - New optional FinOpsScheduleUrl ('none' disables the download).
+
     v2.4.3
       - The Anchor Solution is NO LONGER USED for any F&O decision. Microsoft
         confirmed it is only updated when an update runs from LCS, not from
@@ -40,7 +55,8 @@
         build (applicationVersion from finopsproperties, e.g. 10.0.2645.136)
         mapped by its build prefix (10.0.2645 -> 10.0.48). Built-in map from
         Microsoft's PQU release schedule; extend it with FinOpsBuildTrainMap
-        when a new release ships. An unknown build skips the apply and logs
+        when a new release ships. (v2.4.4: the map is now built
+        automatically from the schedule on every run.) An unknown build skips the apply and logs
         the exact prefix to add (fail-safe, unless scope is Any).
       - Lower-train guard (every scope): a version on a LOWER train than the
         live build is never applied. Microsoft documents that the version
@@ -160,7 +176,11 @@ param(
 
     # Extra build-prefix -> release-train entries, added to (and overriding)
     # the built-in map. Format: '10.0.2790=49, 10.0.2900=50'.
-    [Parameter()] [string] $FinOpsBuildTrainMap     = ''
+    [Parameter()] [string] $FinOpsBuildTrainMap     = '',
+
+    # Where the PQU release schedule is read from (v2.4.4). 'none' disables
+    # the download and uses the built-in map only.
+    [Parameter()] [string] $FinOpsScheduleUrl       = ''
 )
 
 Set-StrictMode -Off
@@ -187,6 +207,7 @@ $Defaults = @{
     FinOpsDeploymentTypes   = 'UnifiedDeveloper,UnifiedSandbox,UnifiedProduction'
     FinOpsUpdateScope       = 'QualityUpdate'
     FinOpsBuildTrainMap     = ''
+    FinOpsScheduleUrl       = 'https://raw.githubusercontent.com/MicrosoftDocs/Dynamics-365-Unified-Operations-public/main/articles/fin-ops-core/dev-itpro/get-started/quality-updates-schedule.md'
 }
 
 # Live application build prefix -> F&O release train.
@@ -194,7 +215,8 @@ $Defaults = @{
 # (https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule),
 # column "Application Version". Every PQU of a release shares the build
 # prefix, e.g. 10.0.48 PQU-1..PQU-8 are 10.0.2645.81 .. 10.0.2645.158.
-# Add new releases with the FinOpsBuildTrainMap variable; no code change.
+# v2.4.4: this is only the FALLBACK. Every run downloads Microsoft's
+# schedule and builds the map from it, so new releases need no change here.
 $FinOpsBuildTrainBuiltIn = [ordered]@{
     '10.0.2428' = 46
     '10.0.2527' = 47
@@ -309,6 +331,7 @@ $optFinOpsEnvList  = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnviron
 $optFinOpsDepTypes = Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
 
 $optFinOpsBuildMapRaw = Resolve-Setting $FinOpsBuildTrainMap 'FinOpsBuildTrainMap' $Defaults.FinOpsBuildTrainMap
+$optFinOpsSchedUrl    = Resolve-Setting $FinOpsScheduleUrl   'FinOpsScheduleUrl'   $Defaults.FinOpsScheduleUrl
 
 $optFinOpsScopeRaw = Resolve-Overridable $FinOpsUpdateScope 'FinOpsUpdateScopeOverride' 'FinOpsUpdateScope' $Defaults.FinOpsUpdateScope
 $optFinOpsScope    = $Defaults.FinOpsUpdateScope
@@ -626,13 +649,66 @@ function ConvertTo-FinOpsVersionList {
     return $out
 }
 
+# Parses Microsoft's PQU release schedule (markdown) into a build-prefix ->
+# train map. Uses only table rows shaped like
+#   | 10.0.49 PQU-1 | ... | 10.0.2790.83 | 7.0.8199.55 |
+# i.e. a "10.0.<train> PQU-<n>" first cell and a 10.0.<build>.<n> cell.
+# A prefix seen with two different trains is dropped (ambiguous).
+# Returns @{ Map; Rows; Ambiguous }.
+function ConvertFrom-FinOpsSchedule {
+    param([AllowEmptyString()] [string] $Text)
+    $seen = @{}; $rows = 0
+    foreach ($line in ($Text -split "`n")) {
+        $cells = @($line.Trim().Trim('|').Split('|') | ForEach-Object { $_.Trim() })
+        if ((Get-Count $cells) -lt 2) { continue }
+        if ($cells[0] -notmatch '^10\.0\.(\d+)\s+PQU-\d+') { continue }
+        $train = [int]$Matches[1]
+        foreach ($c in $cells) {
+            if ($c -match '^(10\.0\.\d{3,})\.\d+$') {
+                $rows++
+                $pfx = $Matches[1]
+                if (-not $seen.ContainsKey($pfx)) { $seen[$pfx] = @{} }
+                $seen[$pfx][$train] = $true
+                break
+            }
+        }
+    }
+    $map = @{}; $ambiguous = @()
+    foreach ($pfx in $seen.Keys) {
+        $trains = @($seen[$pfx].Keys)
+        if ((Get-Count $trains) -eq 1) { $map[$pfx] = [int]$trains[0] } else { $ambiguous += $pfx }
+    }
+    return @{ Map = $map; Rows = $rows; Ambiguous = $ambiguous }
+}
+
+# Downloads and parses the schedule. Never throws.
+# Returns @{ Map; Rows; Ambiguous; Error }.
+function Get-FinOpsScheduleMap {
+    param([AllowEmptyString()] [string] $Url)
+    $empty = @{ Map = @{}; Rows = 0; Ambiguous = @(); Error = '' }
+    if ([string]::IsNullOrWhiteSpace($Url) -or $Url -ieq 'none' -or $Url -ieq 'off') { $empty.Error = 'disabled (finOpsScheduleUrl = none)'; return $empty }
+    try {
+        $r = Invoke-WebRequest -Method GET -Uri $Url -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+        $parsed = ConvertFrom-FinOpsSchedule -Text ([string]$r.Content)
+        if ($parsed.Rows -eq 0) { $empty.Error = 'downloaded, but no "10.0.x PQU-n" rows with an application version were found (page format changed?)'; return $empty }
+        return @{ Map = $parsed.Map; Rows = $parsed.Rows; Ambiguous = $parsed.Ambiguous; Error = '' }
+    }
+    catch { $empty.Error = 'download failed: ' + (Get-ErrorText -ErrorRecord $_); return $empty }
+}
+
 # Builds the build-prefix -> train map: the built-in entries, then the
-# FinOpsBuildTrainMap entries ('10.0.2790=49, 10.0.2900=50') on top.
+# entries parsed from Microsoft's schedule, then the optional
+# FinOpsBuildTrainMap override ('10.0.2790=49, 10.0.2900=50') on top.
 # Returns @{ Map = <hashtable>; Invalid = <entries that did not parse> }.
 function ConvertTo-FinOpsBuildTrainMap {
-    param($BuiltIn, [AllowEmptyString()] [string] $Extra)
+    param($BuiltIn, [AllowEmptyString()] [string] $Extra, $Schedule = @{}, $Ambiguous = @())
     $map = @{}
     foreach ($k in $BuiltIn.Keys) { $map[[string]$k] = [int]$BuiltIn[$k] }
+    # v2.4.4: Microsoft's schedule overrides the built-in fallback, and a
+    # prefix the schedule contradicts itself about is removed entirely
+    # (ambiguous = unknown = skipped), even if the built-in map has it.
+    foreach ($k in $Schedule.Keys) { $map[[string]$k] = [int]$Schedule[$k] }
+    foreach ($k in $Ambiguous) { if ($map.ContainsKey([string]$k)) { $map.Remove([string]$k) } }
     $invalid = @()
     foreach ($entry in (Split-List $Extra)) {
         if ($entry -match '^\s*(\d+\.\d+\.\d+)\s*=\s*(?:10\.0\.)?(\d+)\s*$') { $map[$Matches[1]] = [int]$Matches[2] }
@@ -723,8 +799,6 @@ $excludeList = Split-List $optEnvExclude
 $appExcludeL = Split-List $optAppExclude
 $foFilterL   = Split-List $optFinOpsEnvList
 $foDepTypesL = Split-List $optFinOpsDepTypes
-$foBuildMapR = ConvertTo-FinOpsBuildTrainMap -BuiltIn $FinOpsBuildTrainBuiltIn -Extra $optFinOpsBuildMapRaw
-$foBuildMap  = $foBuildMapR.Map
 
 $appSolutionAlias = @{}
 
@@ -748,11 +822,8 @@ if ($optDoApply) {
     Write-Host ("  FinOpsDeploymentTypes   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
     Write-Host ("  FinOpsUpdateScope       : " + $optFinOpsScope)
 }
-$foMapLabel = @($foBuildMap.Keys | Sort-Object | ForEach-Object { $_ + '=10.0.' + $foBuildMap[$_] }) -join ', '
-Write-Host ("  F&O build -> train map  : " + $foMapLabel)
-if ((Get-Count $foBuildMapR.Invalid) -gt 0) {
-    Write-Warning ("finOpsBuildTrainMap entries ignored (expected '10.0.<build>=<train>', e.g. 10.0.2790=49): " + (Join-Names $foBuildMapR.Invalid))
-}
+Write-Host ("  F&O release schedule    : " + $(if ($optFinOpsSchedUrl -ieq 'none' -or $optFinOpsSchedUrl -ieq 'off') { 'disabled (built-in map only)' } else { 'downloaded at the start of the F&O phase' }))
+if ($optFinOpsBuildMapRaw -ne '') { Write-Host ("  FinOpsBuildTrainMap     : " + $optFinOpsBuildMapRaw + '  (override)') }
 
 if ((Get-Count $optRetiredVars) -gt 0) {
     Write-Host ''
@@ -979,7 +1050,8 @@ foreach ($envObj in $environments) {
 #   VersionUpdate = the NEXT train (current + 1), released stages only  (v2.4.3)
 #   Any           = no scope restriction
 # The current train comes from the LIVE application build (applicationVersion
-# from finopsproperties) mapped by build prefix ($foBuildMap). If it cannot
+# from finopsproperties) mapped by build prefix ($foBuildMap, built from
+# Microsoft's PQU schedule at the start of the phase). If it cannot
 # be determined, apply is skipped unless scope is Any. The Anchor Solution is
 # never used here: it only changes on LCS updates (v2.4.3).
 #
@@ -1035,6 +1107,25 @@ if ($optDoFinOps) {
         Write-Host '##[section]============================================================'
         Write-Host '##[section]FINANCE AND OPERATIONS'
         Write-Host '##[section]============================================================'
+
+        # ---- Release map (v2.4.4): Microsoft's schedule, built-in fallback ----
+        $foSched = @{ Map = @{}; Rows = 0; Ambiguous = @(); Error = 'not needed (no F&O environments detected)' }
+        if ((Get-Count $finOpsDetected) -gt 0) { $foSched = Get-FinOpsScheduleMap -Url $optFinOpsSchedUrl }
+        $foBuildMapR = ConvertTo-FinOpsBuildTrainMap -BuiltIn $FinOpsBuildTrainBuiltIn -Extra $optFinOpsBuildMapRaw -Schedule $foSched.Map -Ambiguous $foSched.Ambiguous
+        $foBuildMap  = $foBuildMapR.Map
+        $foMapLabel  = @($foBuildMap.Keys | Sort-Object | ForEach-Object { '10.0.' + $foBuildMap[$_] + ' = ' + $_ + '.x' }) -join ', '
+        if ($foSched.Error -eq '') {
+            Write-Host ("Release map from Microsoft's PQU schedule (" + $foSched.Rows + " PQU rows): " + $foMapLabel)
+        }
+        elseif ((Get-Count $finOpsDetected) -gt 0) {
+            Write-Host ("##[warning]Microsoft's PQU schedule was not used - " + $foSched.Error + ". Using the built-in release map: " + $foMapLabel + ". Environments on a newer release are skipped, not guessed.")
+        }
+        if ((Get-Count $foSched.Ambiguous) -gt 0) {
+            Write-Host ("##[warning]Microsoft's schedule lists these builds under more than one release, so environments on them are skipped: " + (Join-Names $foSched.Ambiguous))
+        }
+        if ((Get-Count $foBuildMapR.Invalid) -gt 0) {
+            Write-Warning ("finOpsBuildTrainMap entries ignored (expected '10.0.<build>=<train>', e.g. 10.0.2790=49): " + (Join-Names $foBuildMapR.Invalid))
+        }
 
         $foTargets = @()
         foreach ($e in $finOpsDetected) {
@@ -1170,7 +1261,7 @@ if ($optDoFinOps) {
                     if ($null -eq $curTrain) {
                         $foTrainUnknown++
                         $why = 'no application version reported'
-                        if ($live.Prefix -ne '') { $why = "build prefix " + $live.Prefix + " is not in the build -> train map; add it to finOpsBuildTrainMap (e.g. " + $live.Prefix + "=<train>)" }
+                        if ($live.Prefix -ne '') { $why = "build " + $live.Prefix + ".x is not in Microsoft's PQU schedule or the built-in map yet" }
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
                             -Headline ($curShown + " (" + $depType + ") - current release train unknown (" + $why + "), apply skipped (fail-safe). New version available: " + $availLabel) `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `

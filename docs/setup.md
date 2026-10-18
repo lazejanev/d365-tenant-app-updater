@@ -45,7 +45,6 @@ The pipeline needs only three variables to run. Everything else has a built-in d
   - `environmentExclude = Production` (protect production)
   - `finOpsApplyVersion = true` (enable F&O version apply; **changes environments**)
   - `finOpsUpdateScope = VersionUpdate` (opt into the next release train instead of the default PQU on the current train)
-  - `finOpsBuildTrainMap = 10.0.2900=50` (only when Microsoft ships a release newer than 10.0.49; see section 6)
 - Save.
 
 There is no `pipelineName`, `agentVmImage`, or endpoint variable to set. The run name and agent image are fixed in the YAML, and all API endpoints and versions are script defaults you can override only if you ever need to.
@@ -114,17 +113,15 @@ Optional refinements, all inert unless `finOpsApplyVersion = true`:
 - `finOpsTargetVersion` - apply a specific version instead of the highest matching scope.
 - `finOpsDeploymentTypes` - control which deployment types are eligible for a version apply. The default excludes LCS managed environments.
 
-### Where the release train comes from, and keeping the map current
+### Where the release train comes from (nothing to maintain)
 
-The script reads `applicationVersion` from `finopsproperties` on every run (for example `10.0.2645.136`) and maps its build prefix to a release train. Every PQU of a release shares one prefix. The built-in map covers 10.0.46 (`10.0.2428`), 10.0.47 (`10.0.2527`), 10.0.48 (`10.0.2645`) and 10.0.49 (`10.0.2790`), taken from Microsoft's [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule).
+The script reads `applicationVersion` from `finopsproperties` on every run (for example `10.0.2645.136`) and maps its build prefix to a release train. Every PQU of a release shares one prefix.
 
-**When Microsoft ships a new release** (roughly once a quarter):
+The map is built **automatically** on every run from Microsoft's [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule): the pipeline downloads the page's public source and reads each "10.0.xx PQU-n" row with its "Application Version". When Microsoft publishes a new release, the next run knows it. There is nothing to add or update.
 
-1. Open that page and find the new release's first PQU row. Note the build prefix in the "Application Version" column, for example `10.0.2900` from `10.0.2900.75`.
-2. Add `finOpsBuildTrainMap = 10.0.2900=50` to the `D365-TenantAppUpdater` variable group. Separate several entries with commas.
-3. The next run prints the effective map under **Effective settings**.
-
-Until a release is added, environments on it are skipped with a log line naming the prefix to add. Nothing is guessed.
+- The log shows the map it built, e.g. "Release map from Microsoft's PQU schedule (30 PQU rows): 10.0.46 = 10.0.2428.x, ...".
+- If the download fails (no outbound access to `raw.githubusercontent.com`, or the page changed format), the log shows a warning and the built-in map (10.0.46 to 10.0.49) is used instead.
+- An environment on a release that is still unknown is skipped, never guessed.
 
 ### Why the F&O Provisioning App Anchor Solution is not used
 
@@ -175,10 +172,11 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 | `finopsversions returned HTTP 404 RouteNotFound` | Expected, intermittent platform behaviour | Re-run. See section 6. Not a permissions or config issue. |
 | "no PQU version available for 10.0.xx" | No quality update exists yet on the environment's current release train | Expected. Switch `finOpsUpdateScope` to `VersionUpdate` if you want the next release train. |
 | "no version update (next train) available for 10.0.xx" | Nothing released is offered on the next train, or only a later train is offered | Expected. For a deliberate multi-train move, use `Any` with an explicit `finOpsTargetVersion`. |
-| "current release train unknown (build prefix 10.0.xxxx is not in the build -> train map ...)" | The environment is on a release the map does not know yet | Add the prefix to `finOpsBuildTrainMap`, e.g. `10.0.2900=50`. See section 6. |
+| "current release train unknown (build 10.0.xxxx.x is not in Microsoft's PQU schedule or the built-in map yet)" | The release is newer than Microsoft's schedule, or the schedule could not be downloaded | Usually resolves itself on a later run once Microsoft publishes the release. If the log also shows "PQU schedule was not used", check the agent's outbound access to `raw.githubusercontent.com`. |
+| "Microsoft's PQU schedule was not used - ..." | The schedule download failed or the page format changed | The built-in map is used meanwhile. Check outbound access from the agent; nothing else is required. |
 | "current release train unknown (no application version reported)" | `finopsproperties` returned no `applicationVersion` | Re-run. If it persists, check the environment in PPAC. |
 | "every listed version is on a lower train than 10.0.xx" | The list only had versions older than the live build | Expected. Nothing to apply. |
-| Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v2.4.3. |
+| Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v2.4.4. |
 | "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v2.4.3. |
 | F&O phase skipped with a PowerShell version warning | Running under Windows PowerShell 5.1 | Use `pwsh: true` in the task, or PowerShell 7 locally |
 | A warning names `updateFinOpsVersion` or `finOpsInventory` | A retired variable is still in the group | Delete it. It has no effect either way. |

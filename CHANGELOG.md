@@ -14,6 +14,27 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Parallel installs across environments.
 - Dry-run report published as a pipeline artifact.
 
+## [2.4.4] - 2026-10-18
+
+### Changed
+
+- **The build-to-release map is built automatically on every run.** At the start of the Finance and Operations phase the script downloads Microsoft's [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule) from its public source on GitHub (`MicrosoftDocs/Dynamics-365-Unified-Operations-public`) and reads every row shaped like `10.0.49 PQU-1 ... 10.0.2790.83`. When Microsoft publishes a new release, the next run picks it up. In 2.4.3 every new release needed a manual `finOpsBuildTrainMap` entry; nothing has to be maintained now.
+- The map is printed in the log, e.g. "Release map from Microsoft's PQU schedule (30 PQU rows): 10.0.46 = 10.0.2428.x, ...".
+- `finOpsBuildTrainMap` is now an emergency override only. Precedence: built-in fallback, then Microsoft's schedule, then the override.
+
+### Added
+
+- `finOpsScheduleUrl` (optional): where the schedule is read from. `none` disables the download. You never need to set it.
+
+### Fail-safe behaviour
+
+- If the schedule cannot be downloaded, or no usable rows are found (page format changed), the built-in map (10.0.46 to 10.0.49) is used and the log shows a warning. Environments on a newer release are skipped, not guessed.
+- A build that the schedule lists under two different releases is treated as unknown and skipped, even if the built-in map has it.
+
+### Documentation
+
+- README, `docs/parameters.md`, `docs/setup.md`, the pipeline header and CONTRIBUTING no longer ask anyone to maintain a map. `docs/permissions.md` notes the outbound HTTPS access to `raw.githubusercontent.com` the agent needs (Microsoft-hosted agents have it).
+
 ## [2.4.3] - 2026-10-18
 
 ### Fixed

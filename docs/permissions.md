@@ -66,6 +66,10 @@ This has been verified in practice: with an app-only (client credentials) token,
 - If a Finance and Operations route returns **403 Forbidden**, revisit steps 2 and 3 above.
 - If `finopsversions` returns **404 RouteNotFound** while `finopsproperties` succeeds on the same environment, same token, same api-version, this is **not** a permissions problem. It has been observed to be intermittent: the identical call on the identical environment can return RouteNotFound on one run and a genuine 200 with real version data on a later run, with no configuration change in between. Treat it as a normal platform condition and simply re-run. See the Finance and Operations section of the [README](../README.md).
 
+## Outbound network access (Finance and Operations release map)
+
+At the start of the Finance and Operations phase the agent downloads Microsoft's PQU release schedule (a public, read-only file, no credentials) from `raw.githubusercontent.com` to work out which release each environment is on. Microsoft-hosted agents have this access. On a self-hosted agent behind a firewall, allow outbound HTTPS to `raw.githubusercontent.com`. Without it the run still works: the log shows a warning and the built-in release map (10.0.46 to 10.0.49) is used, so environments on newer releases are skipped rather than guessed.
+
 ## PowerShell version
 
 The Finance and Operations phase uses `Invoke-WebRequest -SkipHttpErrorCheck`, which requires **PowerShell 7**. The pipeline task sets `pwsh: true`, so this is satisfied on the hosted agent. If you run the script by hand under Windows PowerShell 5.1, the F&O phase is skipped with a clear warning and Phase 1 still runs normally.
