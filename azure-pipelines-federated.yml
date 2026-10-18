@@ -57,6 +57,15 @@ parameters:
     type: string
     default: ' '
 
+  # Optional approval before production. 'none' = no approval: nothing to
+  # create in Azure DevOps. To require approval: create an environment under
+  # Pipelines > Environments (for example d365-production), add an Approvals
+  # check to it, and set its name as the default here.
+  - name: productionApprovalEnvironment
+    displayName: 'Production approval environment (none = no approval)'
+    type: string
+    default: none
+
 # ---------------------------------------------------------------------
 # Triggers (manual/scheduled). Uncomment the schedule to run nightly.
 # ---------------------------------------------------------------------
@@ -99,4 +108,5 @@ stages:
       auth: federated
       serviceConnection: ${{ variables.serviceConnection }}
       whatIf: ${{ parameters.whatIf }}
+      productionApprovalEnvironment: ${{ parameters.productionApprovalEnvironment }}
       usePacFallback: 'false'

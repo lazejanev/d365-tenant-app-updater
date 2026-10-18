@@ -7,7 +7,7 @@
 v3 keeps every v2 setting, so your variable group keeps working, and adds the controls a tenant-wide updater needs before it touches production.
 
 - **Production ring (on by default).** Non-production environments update as soon as a version is available ("test and break fast"). A production environment only takes a version that a non-production environment already runs. Applies to Dynamics 365 apps and to Finance and Operations. Everything held back is listed with the reason. `productionRing = false` restores v2 behaviour.
-- **Plan, then apply.** The pipeline now has three stages: Plan (reads the tenant, changes nothing), Apply non-production, Apply production. Add an approval to the `d365-production` environment if you want a person to sign off production. Apply re-checks every action against the live tenant first.
+- **Plan, then apply.** The pipeline now has three stages: Plan (reads the tenant, changes nothing), Apply non-production, Apply production. Optionally require an approval before production (Azure DevOps: `productionApprovalEnvironment`; GitHub: the `d365-production` environment) if you want a person to sign off production. Apply re-checks every action against the live tenant first.
 - **GitHub Actions.** The same module, rules and three jobs run on GitHub. See `docs/setup-github.md`.
 - **No client secret.** Sign in with OpenID Connect on GitHub, or workload identity federation on Azure DevOps (preview). The secret remains supported, and works as a backup.
 - **You see the outcome.** App installs are followed for up to 30 minutes and reported as succeeded, failed or still running. Every run publishes a summary on the run page and a JSON report.
