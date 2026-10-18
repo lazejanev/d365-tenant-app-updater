@@ -17,10 +17,57 @@ When you open an issue, include:
 - Your agent type (Microsoft-hosted or self-hosted) and PowerShell version.
 - Which variables you set in the group (names only, values redacted).
 
+## How the code is laid out (v3)
+
+```
+scripts/Update-TenantApps.ps1          thin entry point (parameters -> module)
+src/D365TenantAppUpdater/
+  D365TenantAppUpdater.psd1            ModuleVersion: the ONLY place the version lives
+  D365TenantAppUpdater.psm1            loads Private/*.ps1 in a fixed order
+  Private/Util.ps1                     small helpers (Get-Count, sorting, ...)
+          Host.ps1                     the ONLY file that knows Azure DevOps vs GitHub
+          Settings.ps1                 defaults and setting resolution
+          Http.ps1                     one HTTP helper (never throws, retries 429/503)
+          Auth.ps1                     client secret and federated sign-in, token cache
+          Versions.ps1                 version compare, F&O version list, release map
+          Discovery.ps1                environments and rings
+          Apps.ps1                     phase 1: collect and decide
+          FinOps.ps1                   phase 2: collect and decide
+          Plan.ps1                     collect -> plan, plan.json
+          Apply.ps1                    execute, re-validate, wait for installs
+          Report.ps1                   console summary, summary.md, report.json
+          Main.ps1                     Invoke-D365TenantAppUpdate
+tests/                                 Pester 5 (Unit, Scenario), fake tenant in TestHelpers.ps1
+docs/architecture.md                   diagrams; sources in docs/diagrams, images in docs/images
+pipelines/templates/                   Azure DevOps templates shared by both pipelines
+.github/workflows/                     GitHub workflow, CI, release
+```
+
+Rules that keep it that way:
+
+- Nothing outside `Host.ps1` writes `##vso[...]`, `##[group]`, `::warning::` or touches `GITHUB_*` files.
+- Every HTTP call goes through `Invoke-Http`. Tests mock `Invoke-WebRequest` once, with the fake tenant.
+- Collect first, decide second, act third. Decisions are pure functions of collected data, so the production ring sees every environment, and tests do not need a tenant.
+- Anything listed or processed is sorted with `Sort-Items` / `Sort-ByDisplayName` (natural, ordinal A to Z). Never `Sort-Object` on names: it compares with culture rules, so Windows and Linux agents would disagree.
+- Status colours go through `Write-Colored` (Host.ps1) and always repeat a text tag; colour is never the only signal.
+- Diagrams: edit `docs/diagrams/*.mmd` and re-render the matching `docs/images/*.svg` (see docs/architecture.md).
+
+## Running the tests
+
+PowerShell 7.2+ and Pester 5.7.1:
+
+```powershell
+Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+Invoke-Pester ./tests
+```
+
+No tenant is contacted. `tests/TestHelpers.ps1` describes a fake tenant (`New-FakeEnv`, `New-FakeApp`, `Set-FakeTenant`) that answers every call the module makes. CI (`.github/workflows/ci.yml`) runs the suite on Linux and Windows, PSScriptAnalyzer, and a YAML syntax check on every pull request.
+
 ## Submitting a pull request
 
 - Fork the repository and create a branch from `main`.
 - Make your change. Keep it focused and small where possible.
+- Add or update a test for it. A bug fix starts with a failing test.
 - Test against a non-production tenant or environment, with `whatIf = true` first.
 - Update the docs, `CHANGELOG.md` (Unreleased section), and `RELEASE_NOTES.md` if relevant.
 - Open the pull request with a clear description of the change and why it helps.
@@ -41,19 +88,11 @@ These are not style preferences. Each one has already caused a real failure in t
 
 ### 1. Never let a local variable collide with a parameter name
 
-PowerShell variable names are **case-insensitive**. A local named `$finOpsOnly` is the *same variable* as a `[string]` parameter `$FinOpsOnly`. Assigning a boolean to it coerces the value to the string `"False"`, which is **truthy**, so a guard fires when it should not. This once skipped the entire application phase.
+PowerShell variable names are **case-insensitive**. A local named `$finOpsOnly` is the *same variable* as a `[string]` parameter `$FinOpsOnly`. Assigning a boolean to it coerces the value to the string `"False"`, which is **truthy**, so a guard fires when it should not. This once skipped the entire application phase. In v3 all settings live in one `$settings` object; keep it that way, and never reuse a parameter name for a local.
 
-**Rule:** every local is prefixed `opt*` or `cfg*`. Verify before you push:
+### 2. The exit code is decided in one place
 
-```python
-params  = set(x.lower() for x in re.findall(r'\[Parameter\([^)]*\)\]\s*\[string\]\s*\$(\w+)', s))
-assigns = set(x.lower() for x in re.findall(r'^\s*\$(\w+)\s*=', s, re.M))
-assert not (params & assigns)   # MUST be empty
-```
-
-### 2. Always reset `$LASTEXITCODE` after an external call, and `exit 0` explicitly
-
-Any external tool (notably `pac`) that leaves a non-zero `$LASTEXITCODE` will fail the Azure DevOps task even when the run itself succeeded. Reset it after **every** external invocation, including in the `catch` block, and end the script with an explicit `exit 0`.
+Any external tool (notably `pac`) that leaves a non-zero `$LASTEXITCODE` would fail the task even when the run succeeded. Reset it after **every** external invocation, including in the `catch` block. `Complete-Run` (Host.ps1) is the only place that decides the result; `Invoke-D365TenantAppUpdate` returns exactly one integer and the entry script exits with it. A test checks that nothing else leaks onto the pipeline.
 
 ### 3. Read the HTTP error body from the right place
 
@@ -94,29 +133,28 @@ Missing a patch is acceptable. Moving an environment further than the operator a
 - **`$env` is reserved.** Never use it as a loop variable.
 - **Detection must check state.** The package list is fetched with `appInstallState=All`, so it includes apps merely *offered*. Matching without checking `state -eq 'Installed'` once flagged every environment as F&O.
 - **Undefined `$(var)` passed as a script argument crashes PowerShell.** Pass optional values through the pipeline `env:` block.
-- **`-SkipHttpErrorCheck` is PowerShell 7 only.** Guard any new use of it, as the F&O phase does.
+- **Linux environment variables are case-sensitive.** GitHub runners are Linux: the workflow maps every variable to the exact setting name under `env:`.
+- **Azure Pipelines does not support YAML anchors.** Share blocks through template parameters, as `run-updater.yml` does.
 - **A collapsible `##[group]` label should be the finding, not a placeholder.** Azure DevOps shows the label even when the group is collapsed.
 - **Member enumeration on arrays.** `$array.prop` returns one value per element, so on an array of objects without `prop` it is an array of `$null`s, which is truthy for 2+ elements. Check `-isnot [array]` and `PSObject.Properties[...]` before unwrapping a response. This once made every multi-version `finopsversions` response read as "no versions listed".
 - **Do not use `$top` on a Dataverse query you page with `@odata.nextLink`.** `$top` suppresses the next link.
 
-## Validation checklist before shipping a script change
+## Validation checklist before shipping a change
 
-```python
-# 1. Balanced (strip single-quoted strings and {0} placeholders first)
-s2 = re.sub(r"'[^'\n]*'", "''", s); s2 = re.sub(r'\{\d+[^}]*\}', '', s2)
-assert s2.count('{') == s2.count('}')
-assert s2.count('(') == s2.count(')')
-
-# 2. NO parameter/local collisions (case-insensitive)
-assert not (params & assigns)
-
-# 3. Ends with exit 0
-assert s.rstrip().endswith('exit 0')
-```
-
-Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version on a **lower** train than the live build; an **unknown** build prefix; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
+- `Invoke-Pester ./tests` passes (CI also runs it on Windows).
+- PSScriptAnalyzer reports no errors (CI).
+- The YAML parses (CI).
+- `$LASTEXITCODE` is reset after every external call.
+- Any change to `finOpsUpdateScope` is covered by `tests/Scenario/FinOpsScenarios.Tests.ps1`, which includes: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version on a **lower** train than the live build; an **unknown** build prefix; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
 
 **Always run with `whatIf = true` first.**
+
+## Releasing (maintainer)
+
+1. Bump `ModuleVersion` in `src/D365TenantAppUpdater/D365TenantAppUpdater.psd1`, add the version's section to `CHANGELOG.md` and `RELEASE_NOTES.md`, update the README badge, merge to `main`.
+2. Tag and push: `git tag v3.0.0 && git push origin v3.0.0`.
+3. `.github/workflows/release.yml` checks the tag matches the manifest, runs the tests, and publishes the GitHub release with the notes from `CHANGELOG.md` and a zip.
+4. Azure DevOps mirrors using `sync-from-github.yml` pick up the new release on their next sync.
 
 ## Security
 

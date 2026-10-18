@@ -1,0 +1,25 @@
+flowchart TD
+    A["F#amp;O environment<br/>(provisioning app present,<br/>its version never used)"] --> B["Live build from finopsproperties<br/>e.g. 10.0.2645.136"]
+    B --> C["Release map from Microsoft's<br/>PQU schedule, downloaded each run<br/>10.0.2645 = 10.0.48"]
+    C --> D{"finOpsApplyVersion<br/>= true?"}
+    D -- no --> INV["Inventory only"]
+    D -- yes --> E{"Deployment type<br/>eligible? (not LCS)"}
+    E -- no --> INV
+    E -- yes --> F{"Release train known?"}
+    F -- "no (scope not Any)" --> SAFE["Skip: fail safe"]
+    F -- yes --> G["Filter offered versions by scope<br/>PQU: same train, QualityUpdate<br/>VersionUpdate: next train only<br/>never a lower train"]
+    G --> H{"A version left?"}
+    H -- no --> NONE["Nothing to apply"]
+    H -- yes --> I{"Production environment<br/>and productionRing on?"}
+    I -- no --> APPLY["Apply highest match"]
+    I -- yes --> J{"An updatable non-production<br/>F#amp;O environment already runs it?"}
+    J -- yes --> APPLY
+    J -- no --> HOLD["Held for production"]
+    classDef ok fill:#eaf7ee,stroke:#2f9e58,color:#14532d
+    classDef hold fill:#f6efff,stroke:#8250df,color:#3b1f72
+    classDef skip fill:#f4f6f8,stroke:#8a96a3,color:#1f2328
+    classDef src fill:#eef4ff,stroke:#3b6fd8,color:#16325c
+    class APPLY ok
+    class HOLD hold
+    class INV,SAFE,NONE skip
+    class B,C src

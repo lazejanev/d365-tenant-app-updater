@@ -1,0 +1,19 @@
+flowchart LR
+    V(["New version<br/>published by Microsoft"]) --> N1
+    subgraph Night1["Run 1"]
+        N1["Non-production<br/>Dev, Test, UAT<br/>updated"]
+        P1["Production<br/>held: not proven yet"]
+    end
+    N1 --> N2
+    P1 --> P2
+    subgraph Night2["Run 2"]
+        N2["Non-production<br/>runs the version"]
+        P2["Production<br/>proven, updated"]
+    end
+    N2 -. "proof" .-> P2
+    classDef np fill:#eaf7ee,stroke:#2f9e58,color:#14532d
+    classDef hold fill:#f6efff,stroke:#8250df,color:#3b1f72
+    classDef prod fill:#16325c,stroke:#16325c,color:#ffffff
+    class N1,N2 np
+    class P1 hold
+    class P2 prod

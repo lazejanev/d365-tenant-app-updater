@@ -1,8 +1,13 @@
 # ============================================================================
 # Scheduled GitHub -> Azure DevOps sync
 # ----------------------------------------------------------------------------
-# Pulls the latest commits from the upstream GitHub repository and pushes them
-# into this Azure DevOps repo's `main` branch. GitHub is the source of truth.
+# Pulls the upstream GitHub repository into this Azure DevOps repo's `main`
+# branch. GitHub is the source of truth.
+#
+# What is synced (syncRef):
+#   latest-release : the newest published GitHub release (a tested, tagged
+#                    version such as v3.0.0). <-- DEFAULT, recommended
+#   main           : the newest commit on GitHub main (may be unreleased).
 #
 # Prerequisites (one-time):
 #   1. Repo Settings -> Repositories -> your repo -> Security:
@@ -30,7 +35,8 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  githubUrl: 'https://github.com/lazejanev/d365-tenant-app-updater.git'
+  githubRepo: 'lazejanev/d365-tenant-app-updater'
+  githubUrl: 'https://github.com/$(githubRepo).git'
   targetBranch: 'main'
   # Sync strategy:
   #   reset   : mirror. Force-resets Azure DevOps to exactly match GitHub
@@ -39,6 +45,7 @@ variables:
   #   ff-only : safe. Only advances when Azure DevOps has no diverging commits.
   #             Fails if the two histories have diverged.
   syncStrategy: 'reset'
+  syncRef: 'latest-release'
 
 steps:
   # Check out the Azure DevOps repo and keep the OAuth credentials so we can
@@ -58,7 +65,24 @@ steps:
       git remote add github "$(githubUrl)"
 
       echo "Fetching from GitHub..."
-      git fetch github "$(targetBranch)" --tags
+      git fetch github "$(targetBranch)" --tags --force
+
+      source_ref="github/$(targetBranch)"
+      if [ "$(syncRef)" = "latest-release" ]; then
+        tag=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/$(githubRepo)/releases/latest" \
+          | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" || true)
+        if [ -n "$tag" ] && git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+          echo "Latest GitHub release: $tag"
+          source_ref="refs/tags/$tag"
+        else
+          # Never fall back to main: that could sync unreleased code. Nothing
+          # is changed; the next scheduled sync tries again.
+          echo "##vso[task.logissue type=error]Could not read the latest GitHub release (the GitHub API may be rate limiting this agent). Nothing was synced; the next run tries again. Set syncRef = main to sync main instead."
+          exit 1
+        fi
+      fi
+      echo "Syncing from: $source_ref"
 
       echo "Checking out $(targetBranch) (tracking origin)..."
       # The pipeline checkout leaves us on a detached HEAD, and `main` now
@@ -68,10 +92,10 @@ steps:
 
       if [ "$(syncStrategy)" = "reset" ]; then
         echo "Strategy: reset (mirror GitHub exactly)"
-        git reset --hard "github/$(targetBranch)"
+        git reset --hard "$source_ref"
       else
         echo "Strategy: ff-only (safe fast-forward)"
-        git merge --ff-only "github/$(targetBranch)"
+        git merge --ff-only "$source_ref"
       fi
     displayName: 'Fetch and merge from GitHub'
 

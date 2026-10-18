@@ -1,0 +1,22 @@
+flowchart TD
+    A["App package offered<br/>for an environment"] --> B{"Installed in this<br/>environment?"}
+    B -- "no (never installs new apps)" --> SKIP1["Skip"]
+    B -- "install failed before" --> RETRY["Retry candidate"]
+    B -- yes --> C{"In appExclude?"}
+    C -- yes --> SKIP2["Skip: excluded"]
+    C -- no --> D{"Installed version known<br/>(managed solution in Dataverse)?"}
+    D -- no --> SKIP3["Skip: no match<br/>never installs blindly"]
+    D -- yes --> F{"Available strictly newer<br/>than installed?"}
+    F -- no --> CUR["Up to date<br/>never downgrades"]
+    F -- yes --> G{"Production environment<br/>and productionRing on?"}
+    RETRY --> G
+    G -- no --> UPD["Update"]
+    G -- yes --> H{"A non-production environment<br/>runs this version or newer<br/>(for productionSoakDays)?"}
+    H -- yes --> UPD
+    H -- no --> HOLD["Held for production<br/>reason in the summary"]
+    classDef ok fill:#eaf7ee,stroke:#2f9e58,color:#14532d
+    classDef hold fill:#f6efff,stroke:#8250df,color:#3b1f72
+    classDef skip fill:#f4f6f8,stroke:#8a96a3,color:#1f2328
+    class UPD ok
+    class HOLD hold
+    class SKIP1,SKIP2,SKIP3,CUR skip

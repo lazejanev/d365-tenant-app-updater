@@ -1,104 +1,25 @@
 # =====================================================================
-# d365-tenant-app-updater
-# Update all Dynamics 365 first-party (Dataverse) apps across a tenant,
-# report Finance and Operations inventory, and optionally apply F&O
-# application versions on eligible environments.
+# d365-tenant-app-updater v3 - Azure DevOps pipeline (client secret)
 #
-# HOW THE TWO PHASES WORK
-#   Phase 1 always runs against every environment that passes
-#   environmentFilter / environmentExclude. While it inspects each
-#   environment it also records which ones have Finance and Operations
-#   installed. The F&O Provisioning App Anchor Solution is deliberately
-#   excluded from Phase 1's generic install attempts - it always fails
-#   there with a Custom Install Experience response, and is exclusively
-#   owned by Phase 2's dedicated route.
+# Keeps Dynamics 365 first-party (Dataverse) apps and Finance and
+# Operations versions current across every environment of a tenant.
 #
-#   Phase 2 - Finance and Operations:
-#     INVENTORY     always runs, read-only, no switch. Reports the LIVE
-#                   application version (finopsproperties, fetched fresh
-#                   every run), platform version, deployment type and AOS
-#                   counts per F&O environment.
-#     VERSION APPLY controlled by finOpsApplyVersion, default false. This
-#                   is the ONLY on/off switch in the F&O phase and the
-#                   only way a version is ever applied. It changes the
-#                   environment.
-#     UPDATE SCOPE  controlled by finOpsUpdateScope, default QualityUpdate
-#                   (displayed as "PQU" in the log). Since v2.4.2 it uses
-#                   TWO checks together:
-#                     QualityUpdate - the version must be staged
-#                                     QualityUpdate (Microsoft's own
-#                                     releaseStage) AND be on the SAME
-#                                     release train as the environment
-#                                     (e.g. 10.0.48.x stays on 10.0.48).
-#                     VersionUpdate - the version must be on the NEXT
-#                                     release train (current + 1) and be
-#                                     staged GeneralAvailability or
-#                                     QualityUpdate (since v2.4.3).
-#                     Any           - the numerically highest version,
-#                                     no train or stage restriction.
-#                   The environment's current release train is read from
-#                   its LIVE application build (finopsproperties
-#                   applicationVersion, e.g. 10.0.2645.x = 10.0.48) via a
-#                   build-prefix map. Since v2.4.4 the map is built
-#                   AUTOMATICALLY on every run from Microsoft's published
-#                   PQU schedule - nothing to maintain. Built-in fallback:
-#                   10.0.46 to 10.0.49. If the train cannot be determined,
-#                   the apply is SKIPPED (fail-safe) unless scope is Any.
-#                   In EVERY scope, a version on a lower train than the
-#                   live build is never applied.
-#                   The F&O Provisioning App Anchor Solution is NOT used:
-#                   Microsoft only updates it for LCS-driven updates.
-#                   WARNING: v2.4.0 and v2.4.1 checked releaseStage only.
-#                   releaseStage describes the build itself, not its
-#                   relation to the environment, so a QualityUpdate on a
-#                   NEWER train (e.g. 10.0.49.3) moved 10.0.48
-#                   environments to 10.0.49. Do not use those versions
-#                   with finOpsApplyVersion = true.
+#   Plan                -> reads the tenant, writes plan.json and the run
+#                          summary (Extensions tab). Changes nothing.
+#   Apply non-production -> applies the non-production part of the plan.
+#   Apply production    -> applies the production part of the plan, as a
+#                          deployment to the environment "d365-production".
 #
-#   Version apply is gated behind a live route check, so it begins working
-#   automatically once the finopsversions route is available. That is
-#   precisely why the on/off switch must be set explicitly: no default, no
-#   other variable and no platform change can turn it on.
+# Production ring (productionRing, default true): a production environment
+# only takes a version that a non-production environment already runs.
+# Environments and apps are processed and reported A to Z.
 #
-# A NOTE ON THE finopsversions ROUTE
-#   This route has been observed to intermittently return HTTP 404
-#   RouteNotFound on some runs and a genuine 200 with real version data on
-#   others, for the SAME environment, SAME token, SAME api-version, with
-#   no configuration change in between. This is treated as a normal,
-#   expected platform condition, reported factually per environment, and
-#   is not counted as a script failure. If you see RouteNotFound, simply
-#   re-run; do not treat it as evidence of a code or configuration defect.
+# Required variables in the variable group 'D365-TenantAppUpdater':
+#   ClientId, ClientSecret (secret), TenantId
+# Everything else is optional; see docs/parameters.md.
 #
-# CONFIGURATION MODEL
-#   Required variables in 'D365-TenantAppUpdater':
-#       ClientId, ClientSecret (secret), TenantId
-#   Everything else has a built-in default in the script. To override any
-#   setting, add a variable with the matching name to the group.
-#
-#   Optional override variables:
-#     authority, bapApiRoot, bapApiVersion, powerPlatformScope, ppApiRoot,
-#     appManagementApiVersion, finOpsApiVersion, dumpDiagnostics,
-#     dumpSolutionCatalog, retryFailedInstalls, whatIf, usePacFallback,
-#     environmentFilter, environmentExclude, appExclude,
-#     finOpsApplyVersion, finOpsTargetVersion, finOpsEnvironmentFilter,
-#     finOpsDeploymentTypes, finOpsUpdateScope, finOpsScheduleUrl,
-#     finOpsBuildTrainMap (emergency override only)
-#
-#   Retired: updateFinOpsVersion and finOpsInventory. Both are ignored. If
-#   either is still in the variable group the script says so once in the
-#   log. Remove them.
-#
-#   Values are passed through env: so an undefined variable stays a
-#   harmless literal that the script ignores in favour of its default.
-#
-# NOTE ON POWERSHELL
-#   The task runs with pwsh: true. The Finance and Operations phase needs
-#   PowerShell 7. On Windows PowerShell 5.1 it is skipped with a clear
-#   message; Phase 1 still runs.
-#
-# NOTE ON THE POWER PLATFORM CLI
-#   The CLI is only needed for the optional app-install fallback
-#   (usePacFallback). The F&O phase uses REST and does not need it.
+# No client secret? Use azure-pipelines-federated.yml (workload identity
+# federation, preview). Setup: docs/setup-azure-devops.md
 # =====================================================================
 
 name: 'd365-tenant-app-updater-$(Date:yyyyMMdd)$(Rev:.r)'
@@ -169,8 +90,8 @@ pool:
 variables:
   - group: D365-TenantAppUpdater
 
-  # Queue-time overrides. The sentinel resolves to blank so the script falls
-  # back to the library value, then to its own default.
+  # Queue-time overrides. The sentinel resolves to blank so the run falls
+  # back to the library value, then to the built-in default.
   - name: whatIfOverride
     value: ${{ replace(parameters.whatIf, 'useLibraryOrDefault', '') }}
   - name: usePacOverride
@@ -179,78 +100,12 @@ variables:
     value: ${{ replace(parameters.finOpsApplyVersion, 'useLibraryOrDefault', '') }}
   - name: finOpsUpdateScopeOverride
     value: ${{ replace(parameters.finOpsUpdateScope, 'useLibraryOrDefault', '') }}
+  - name: finOpsTargetVersionOverride
+    value: ${{ parameters.finOpsTargetVersion }}
 
 stages:
-  - stage: UpdateApps
-    displayName: 'Update Dynamics 365 apps tenant wide'
-    jobs:
-      - job: Update
-        displayName: 'Run tenant app updater'
-        timeoutInMinutes: 180
-        steps:
-          - checkout: self
-
-          # Only required for the optional app-install fallback.
-          - powershell: |
-              $ErrorActionPreference = 'Stop'
-              Write-Host 'Installing Power Platform CLI (latest)'
-              dotnet tool install --global Microsoft.PowerApps.CLI.Tool
-              Write-Host "##vso[task.prependpath]$HOME/.dotnet/tools"
-            displayName: 'Install Power Platform CLI'
-            condition: >
-              and(succeeded(),
-                  or(eq('${{ parameters.usePacFallback }}', 'true'),
-                     eq(variables['usePacFallback'], 'true')))
-
-          - task: PowerShell@2
-            displayName: 'Update applications (and F&O version where enabled)'
-            inputs:
-              targetType: 'filePath'
-              filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
-              pwsh: true
-              failOnStderr: false
-              arguments: >
-                -ClientId "$(ClientId)"
-                -ClientSecret "$(ClientSecret)"
-                -TenantId "$(TenantId)"
-            env:
-              Authority:               $(authority)
-              BapApiRoot:              $(bapApiRoot)
-              BapApiVersion:           $(bapApiVersion)
-              PowerPlatformScope:      $(powerPlatformScope)
-              PpApiRoot:               $(ppApiRoot)
-              AppManagementApiVersion: $(appManagementApiVersion)
-              FinOpsApiVersion:        $(finOpsApiVersion)
-              DumpDiagnostics:         $(dumpDiagnostics)
-              DumpSolutionCatalog:     $(dumpSolutionCatalog)
-              RetryFailedInstalls:     $(retryFailedInstalls)
-              EnvironmentFilter:       $(environmentFilter)
-              EnvironmentExclude:      $(environmentExclude)
-              AppExclude:              $(appExclude)
-              FinOpsEnvironmentFilter: $(finOpsEnvironmentFilter)
-              FinOpsDeploymentTypes:   $(finOpsDeploymentTypes)
-              # The release map is downloaded from Microsoft's PQU schedule
-              # on every run (v2.4.4). Neither needs to be set:
-              # finOpsScheduleUrl = none disables the download;
-              # finOpsBuildTrainMap is an emergency override only.
-              FinOpsScheduleUrl:       $(finOpsScheduleUrl)
-              FinOpsBuildTrainMap:     $(finOpsBuildTrainMap)
-              # Both the library value and the queue-time override are passed.
-              # The script prefers override, then library, then its default.
-              WhatIf:                      $(whatIf)
-              WhatIfOverride:              $(whatIfOverride)
-              UsePacFallback:              $(usePacFallback)
-              UsePacFallbackOverride:      $(usePacOverride)
-              # The single Finance and Operations on/off switch. Default false.
-              FinOpsApplyVersion:          $(finOpsApplyVersion)
-              FinOpsApplyVersionOverride:  $(finOpsApplyOverride)
-              # Restricts WHICH kind of update apply may select. Default
-              # QualityUpdate (PQU on the same release train only).
-              FinOpsUpdateScope:           $(finOpsUpdateScope)
-              FinOpsUpdateScopeOverride:   $(finOpsUpdateScopeOverride)
-              FinOpsTargetVersion:         $(finOpsTargetVersion)
-              FinOpsTargetVersionOverride: ${{ parameters.finOpsTargetVersion }}
-              # Retired. Passed only so the script can warn if they are still
-              # present in the variable group. They have no effect.
-              UpdateFinOpsVersion:         $(updateFinOpsVersion)
-              FinOpsInventory:             $(finOpsInventory)
+  - template: pipelines/templates/updater-stages.yml
+    parameters:
+      auth: secret
+      whatIf: ${{ parameters.whatIf }}
+      usePacFallback: ${{ parameters.usePacFallback }}

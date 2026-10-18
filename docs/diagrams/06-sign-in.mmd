@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant Run as Updater run
+    participant Host as GitHub / Azure DevOps
+    participant Entra as Microsoft Entra ID
+    participant API as Power Platform APIs
+    Note over Run: authMode = Auto (default)
+    Run->>Host: Request OIDC token (audience api://AzureADTokenExchange)
+    Host-->>Run: Short-lived signed token for this repo, branch or service connection
+    Run->>Entra: client_credentials + client_assertion (no secret)
+    alt Federated credential matches
+        Entra-->>Run: Access token
+    else Refused on the first token and a secret exists
+        Run->>Entra: client_credentials + client secret (backup)
+        Entra-->>Run: Access token, warning in the log
+    end
+    Run->>API: Calls with the token, cached per API, renewed 5 min before expiry

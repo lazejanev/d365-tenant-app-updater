@@ -1,0 +1,129 @@
+# =====================================================================
+# Stages template: Plan -> Apply non-production -> Apply production.
+#
+#   Plan                 reads the tenant, writes plan.json, summary.md and
+#                        report.json (artifact "plan"). Changes nothing.
+#   ApplyNonProduction   applies the non-production actions of the plan.
+#                        Runs only when the plan has some.
+#   ApplyProduction      applies the production actions of the plan as a
+#                        deployment job to the Azure DevOps environment
+#                        "d365-production". Add an Approvals check to that
+#                        environment if you want a person to approve
+#                        production (optional; off by default).
+#
+# Production actions in a plan were already proven: with productionRing =
+# true a production environment only gets a version a non-production
+# environment already ran when the plan was made. Apply re-checks every
+# action against the live tenant before changing anything.
+# =====================================================================
+
+parameters:
+  - name: auth
+    type: string
+    default: secret
+  - name: serviceConnection
+    type: string
+    default: ''
+  - name: whatIf
+    type: string
+    default: useLibraryOrDefault
+  - name: usePacFallback
+    type: string
+    default: useLibraryOrDefault
+  - name: productionEnvironment
+    type: string
+    default: d365-production
+
+stages:
+  - stage: Plan
+    displayName: 'Plan'
+    jobs:
+      - job: Plan
+        displayName: 'Read the tenant and plan'
+        timeoutInMinutes: 120
+        steps:
+          - checkout: self
+          - template: run-updater.yml
+            parameters:
+              mode: Plan
+              stepName: plan
+              displayName: 'Plan updates (changes nothing)'
+              outputDirectory: '$(Build.ArtifactStagingDirectory)/plan'
+              auth: ${{ parameters.auth }}
+              serviceConnection: ${{ parameters.serviceConnection }}
+          - publish: '$(Build.ArtifactStagingDirectory)/plan'
+            artifact: plan
+            displayName: 'Publish plan and reports'
+            condition: succeededOrFailed()
+
+  - stage: ApplyNonProduction
+    displayName: 'Apply: non-production'
+    dependsOn: Plan
+    condition: >
+      and(succeeded(),
+          ne('${{ parameters.whatIf }}', 'true'),
+          eq(dependencies.Plan.outputs['Plan.plan.hasNonProductionActions'], 'true'))
+    jobs:
+      - job: Apply
+        displayName: 'Apply non-production actions'
+        timeoutInMinutes: 180
+        steps:
+          - checkout: self
+          - download: current
+            artifact: plan
+          - template: install-pac.yml
+            parameters:
+              usePacFallback: ${{ parameters.usePacFallback }}
+          - template: run-updater.yml
+            parameters:
+              mode: Apply
+              ring: NonProduction
+              stepName: apply
+              displayName: 'Apply non-production actions'
+              planFile: '$(Pipeline.Workspace)/plan/plan.json'
+              outputDirectory: '$(Build.ArtifactStagingDirectory)/apply-nonproduction'
+              auth: ${{ parameters.auth }}
+              serviceConnection: ${{ parameters.serviceConnection }}
+          - publish: '$(Build.ArtifactStagingDirectory)/apply-nonproduction'
+            artifact: apply-nonproduction
+            displayName: 'Publish reports'
+            condition: succeededOrFailed()
+
+  - stage: ApplyProduction
+    displayName: 'Apply: production'
+    dependsOn:
+      - Plan
+      - ApplyNonProduction
+    condition: >
+      and(not(failed()), not(canceled()),
+          ne('${{ parameters.whatIf }}', 'true'),
+          eq(dependencies.Plan.outputs['Plan.plan.hasProductionActions'], 'true'))
+    jobs:
+      - deployment: Apply
+        displayName: 'Apply production actions'
+        environment: ${{ parameters.productionEnvironment }}
+        timeoutInMinutes: 180
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: plan
+                - template: install-pac.yml
+                  parameters:
+                    usePacFallback: ${{ parameters.usePacFallback }}
+                - template: run-updater.yml
+                  parameters:
+                    mode: Apply
+                    ring: Production
+                    stepName: apply
+                    displayName: 'Apply production actions'
+                    planFile: '$(Pipeline.Workspace)/plan/plan.json'
+                    outputDirectory: '$(Build.ArtifactStagingDirectory)/apply-production'
+                    auth: ${{ parameters.auth }}
+                    serviceConnection: ${{ parameters.serviceConnection }}
+                - publish: '$(Build.ArtifactStagingDirectory)/apply-production'
+                  artifact: apply-production
+                  displayName: 'Publish reports'
+                  condition: succeededOrFailed()

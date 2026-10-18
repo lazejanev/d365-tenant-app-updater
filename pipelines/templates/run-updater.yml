@@ -1,0 +1,127 @@
+# =====================================================================
+# Steps template: runs scripts/Update-TenantApps.ps1 once.
+# Used by azure-pipelines.yml (client secret) and
+# azure-pipelines-federated.yml (workload identity federation).
+#
+# Every setting is passed as an environment variable with the setting's
+# name. An undefined pipeline variable stays a harmless "$(name)" literal,
+# which the script ignores in favour of its built-in default.
+# =====================================================================
+
+parameters:
+  - name: mode            # Plan | Apply | PlanAndApply
+    type: string
+  - name: ring            # All | NonProduction | Production
+    type: string
+    default: All
+  - name: outputDirectory
+    type: string
+  - name: planFile
+    type: string
+    default: ''
+  - name: stepName
+    type: string
+    default: updater
+  - name: displayName
+    type: string
+  # 'secret': plain PowerShell step with ClientSecret.
+  # 'federated': AzureCLI@2 step with a workload identity federation
+  # service connection (named by serviceConnection).
+  - name: auth
+    type: string
+    default: secret
+    values: [secret, federated]
+  - name: serviceConnection
+    type: string
+    default: ''
+
+  # Every setting, passed to the script as an environment variable of the
+  # same name. Not meant to be overridden by callers.
+  - name: settings
+    type: object
+    default:
+      Authority: '$(authority)'
+      BapApiRoot: '$(bapApiRoot)'
+      BapApiVersion: '$(bapApiVersion)'
+      PowerPlatformScope: '$(powerPlatformScope)'
+      PpApiRoot: '$(ppApiRoot)'
+      AppManagementApiVersion: '$(appManagementApiVersion)'
+      FinOpsApiVersion: '$(finOpsApiVersion)'
+      DumpDiagnostics: '$(dumpDiagnostics)'
+      DumpSolutionCatalog: '$(dumpSolutionCatalog)'
+      RetryFailedInstalls: '$(retryFailedInstalls)'
+      EnvironmentFilter: '$(environmentFilter)'
+      EnvironmentExclude: '$(environmentExclude)'
+      AppExclude: '$(appExclude)'
+      FinOpsEnvironmentFilter: '$(finOpsEnvironmentFilter)'
+      FinOpsDeploymentTypes: '$(finOpsDeploymentTypes)'
+      FinOpsScheduleUrl: '$(finOpsScheduleUrl)'
+      FinOpsBuildTrainMap: '$(finOpsBuildTrainMap)'
+      WhatIf: '$(whatIf)'
+      WhatIfOverride: '$(whatIfOverride)'
+      UsePacFallback: '$(usePacFallback)'
+      UsePacFallbackOverride: '$(usePacOverride)'
+      FinOpsApplyVersion: '$(finOpsApplyVersion)'
+      FinOpsApplyVersionOverride: '$(finOpsApplyOverride)'
+      FinOpsUpdateScope: '$(finOpsUpdateScope)'
+      FinOpsUpdateScopeOverride: '$(finOpsUpdateScopeOverride)'
+      FinOpsTargetVersion: '$(finOpsTargetVersion)'
+      FinOpsTargetVersionOverride: '$(finOpsTargetVersionOverride)'
+      # New in v3.0.0
+      ProductionRing: '$(productionRing)'
+      ProductionEnvironmentTypes: '$(productionEnvironmentTypes)'
+      ProductionEnvironments: '$(productionEnvironments)'
+      ProductionSoakDays: '$(productionSoakDays)'
+      WaitForInstallsMinutes: '$(waitForInstallsMinutes)'
+      FailOnIssues: '$(failOnIssues)'
+      AuthMode: '$(authMode)'
+      # Retired. Passed only so the run can warn if they are still set.
+      UpdateFinOpsVersion: '$(updateFinOpsVersion)'
+      FinOpsInventory: '$(finOpsInventory)'
+
+steps:
+  - ${{ if eq(parameters.auth, 'secret') }}:
+    - task: PowerShell@2
+      name: ${{ parameters.stepName }}
+      displayName: ${{ parameters.displayName }}
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
+        pwsh: true
+        failOnStderr: false
+        arguments: >
+          -ClientId "$(ClientId)"
+          -ClientSecret "$(ClientSecret)"
+          -TenantId "$(TenantId)"
+          -Mode ${{ parameters.mode }}
+          -Ring ${{ parameters.ring }}
+          -OutputDirectory "${{ parameters.outputDirectory }}"
+          -PlanFile "${{ parameters.planFile }}"
+      env:
+        ${{ insert }}: ${{ parameters.settings }}
+
+  - ${{ if eq(parameters.auth, 'federated') }}:
+    - task: AzureCLI@2
+      name: ${{ parameters.stepName }}
+      displayName: ${{ parameters.displayName }}
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        scriptType: pscore
+        scriptLocation: scriptPath
+        scriptPath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
+        # ClientId and TenantId come from the service connection unless the
+        # variable group sets them.
+        arguments: >
+          -Mode ${{ parameters.mode }}
+          -Ring ${{ parameters.ring }}
+          -OutputDirectory "${{ parameters.outputDirectory }}"
+          -PlanFile "${{ parameters.planFile }}"
+          -AuthMode Federated
+        failOnStandardError: false
+      env:
+        ${{ insert }}: ${{ parameters.settings }}
+        D365_CLIENT_ID:             $(ClientId)
+        D365_TENANT_ID:             $(TenantId)
+        ServiceConnectionId:        $(serviceConnectionId)
+        # Needed to request the pipeline's OIDC token.
+        SYSTEM_ACCESSTOKEN:         $(System.AccessToken)
