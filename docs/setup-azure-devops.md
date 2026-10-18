@@ -14,8 +14,7 @@ Both run the same three stages:
 ```
 Plan  ->  Apply: non-production  ->  Apply: production
           (only if the plan has      (only if the plan has production
-           non-production actions)    actions; deployment to the Azure
-                                      DevOps environment d365-production)
+           non-production actions)    actions; optional approval)
 ```
 
 **Plan** reads the whole tenant and writes the plan and the run summary (Extensions tab). It changes nothing. The two **Apply** stages apply their part of the plan, re-checking each action against the live tenant first.
@@ -75,13 +74,18 @@ There is no `pipelineName`, `agentVmImage`, or endpoint variable to set. The run
 - Point it at your repository and select the existing `azure-pipelines.yml`.
 - Save (do not run yet).
 - Authorize the pipeline to use the variable group: open the variable group > **Pipeline permissions** > add this pipeline.
-- On the first run that has production actions, Azure DevOps creates the environment **d365-production** (Pipelines > Environments) and may ask you to permit the pipeline to use it. Approve once.
+- Nothing else to create: by default the pipeline uses no Azure DevOps environments.
 
 ### Optional: a person approves production
 
-The production stage is a deployment to the Azure DevOps environment `d365-production`. By default it has no checks, so production follows automatically once non-production proves a version. To require approval:
+By default **Apply: production** is a normal job, so production follows automatically once non-production proves a version. To have a person approve it:
 
-- **Pipelines > Environments > d365-production > Approvals and checks > + > Approvals**, add the approvers, Create.
+1. **Pipelines > Environments > New environment**: name it, for example `d365-production`, Resource **None**, Create. Create it here first: Azure DevOps does not create environments for YAML that arrives through a git sync, and a run that names a missing environment fails before it starts ("Environment ... could not be found").
+2. In the environment: **Approvals and checks > + > Approvals**, add the approvers, Create.
+3. In `azure-pipelines.yml` (or `azure-pipelines-federated.yml`), set the default of the `productionApprovalEnvironment` parameter to that name, or pick it at queue time.
+4. On the first run, permit the pipeline to use the environment when Azure DevOps asks.
+
+**Apply: production** then runs as a deployment to that environment and waits for approval. With `sync-from-github.yml` in `reset` mode your YAML edit is overwritten by the next sync, so either choose the environment at queue time, use `ff-only`, or keep the change on your own branch.
 
 The run then waits at **Apply: production** until someone approves, and shows the plan's production actions in the summary of the Plan stage. Apply re-checks every action when it finally runs, so a late approval never installs something different from what was planned.
 
@@ -184,7 +188,7 @@ The Finance and Operations phase does **not** use the CLI. It calls the REST API
 
 To keep the tenant continuously up to date, open `azure-pipelines.yml`, uncomment the `schedules` block, adjust the cron expression, and commit.
 
-With the production ring on (the default), a nightly schedule gives you: non-production updates every night, production updates the night after a non-production environment has run the version. Add `productionSoakDays` to wait longer for apps, or an approval on `d365-production` (section 4) to keep a person in the loop.
+With the production ring on (the default), a nightly schedule gives you: non-production updates every night, production updates the night after a non-production environment has run the version. Add `productionSoakDays` to wait longer for apps, or a production approval (section 4) to keep a person in the loop.
 
 If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` should be on, and whether `finOpsUpdateScope` should stay at the safer `QualityUpdate` default or be widened to `VersionUpdate`. An unattended run that applies a full release-wave jump is a different risk profile from an unattended run that only applies same-train patches.
 
@@ -226,6 +230,7 @@ Keep `ClientId` and `TenantId` in the variable group. (The task may also expose 
 | "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v2.4.3. |
 | "requires PowerShell 7.2" | Running under Windows PowerShell 5.1 | v3 requires PowerShell 7.2 or later. The pipelines use it already; locally, run with `pwsh`. |
 | **Held for production** for a version | No non-production environment in scope runs it yet | Expected (`productionRing = true`). It is applied once non-production has it. Set `productionRing = false` to update everything at once. |
+| "Environment d365-production could not be found. The environment does not exist or has not been authorized for use." | v3.0.0 before this fix referenced an approval environment by default, and Azure DevOps does not create environments for synced YAML | Update to the latest version (no environment by default), or create the environment under **Pipelines > Environments** |
 | `Stale` in an Apply stage | The available version changed, or the F&O version is no longer offered, between Plan and Apply | Expected. The next run plans again. |
 | `TimedOut` for an app install | The install is still running after `waitForInstallsMinutes` | Not a failure. The next run sees the result. Increase `waitForInstallsMinutes` if you want to wait longer. |
 | Run is orange (SucceededWithIssues) | Something could not be read or an install failed | See **Needs attention** in the summary. Set `failOnIssues = true` to fail the Apply stages instead (the Plan stage is never failed for this). |

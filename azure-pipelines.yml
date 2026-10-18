@@ -7,8 +7,8 @@
 #   Plan                -> reads the tenant, writes plan.json and the run
 #                          summary (Extensions tab). Changes nothing.
 #   Apply non-production -> applies the non-production part of the plan.
-#   Apply production    -> applies the production part of the plan, as a
-#                          deployment to the environment "d365-production".
+#   Apply production    -> applies the production part of the plan. Optional
+#                          approval: productionApprovalEnvironment below.
 #
 # Production ring (productionRing, default true): a production environment
 # only takes a version that a non-production environment already runs.
@@ -70,6 +70,15 @@ parameters:
     type: string
     default: ' '
 
+  # Optional approval before production. 'none' = no approval: nothing to
+  # create in Azure DevOps. To require approval: create an environment under
+  # Pipelines > Environments (for example d365-production), add an Approvals
+  # check to it, and set its name as the default here.
+  - name: productionApprovalEnvironment
+    displayName: 'Production approval environment (none = no approval)'
+    type: string
+    default: none
+
 # ---------------------------------------------------------------------
 # Triggers (manual/scheduled). Uncomment the schedule to run nightly.
 # ---------------------------------------------------------------------
@@ -108,4 +117,5 @@ stages:
     parameters:
       auth: secret
       whatIf: ${{ parameters.whatIf }}
+      productionApprovalEnvironment: ${{ parameters.productionApprovalEnvironment }}
       usePacFallback: ${{ parameters.usePacFallback }}

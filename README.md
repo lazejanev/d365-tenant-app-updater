@@ -69,7 +69,7 @@ How each decision is made, the module layout and the sign-in flow: [docs/archite
 | Which environments | Everything else: Sandbox, Developer, Trial, ... | PPAC type Production, anything in `productionEnvironments`, F&O `UnifiedProduction` / `LCSProduction` |
 | Apps | Updated as soon as a newer version is available | Updated when at least one non-production environment already has that version or newer (optionally for `productionSoakDays`) |
 | Finance and Operations | Per `finOpsUpdateScope` | Same, once a non-production F&O environment runs the version |
-| Approval | No | Optional (environment `d365-production`) |
+| Approval | No | Optional (Azure DevOps: `productionApprovalEnvironment`; GitHub: `d365-production` reviewers) |
 
 On a nightly schedule this means: non-production updates every night; production updates the night after non-production has run the version. Set `productionRing = false` to update everything at once, as in v2. Details: [docs/parameters.md](docs/parameters.md#production-ring-v3).
 
