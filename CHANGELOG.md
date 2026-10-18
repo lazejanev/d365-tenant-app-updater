@@ -18,13 +18,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
-- **Multi-version `finopsversions` responses were read as "no versions listed".** When the route returned a bare JSON array with two or more entries, `ConvertTo-FinOpsVersionList` probed `$Json.value` (and similar) on the array. PowerShell member enumeration returns one `$null` per entry, which is truthy for two or more entries, so the real list was replaced by `$null`s. Environments offered several versions were never updated. Single-entry responses and responses wrapped in `{"value": [...]}` were unaffected. The parser now only unwraps an object, never an array.
-- **F&O detection depended on package order.** `Get-FinOpsMarkerPackage` returned the first installed package whose display name contained "finance and operations". If another such app (for example a virtual entity solution) was listed before the provisioning app, the wrong package was used: its version became the "anchor" (train unknown, so a valid PQU was skipped), and the real provisioning app was sent to the Phase 1 install loop. Unique-name markers are now checked across all packages first, and the display-name fallback ignores virtual entity, dual-write and package manager apps.
-- **An F&O environment whose Dataverse read failed vanished from the inventory.** Detection now happens before the Dataverse read. Such an environment is inventoried and never has a version applied in that run (new counter "skipped (Dataverse read)").
+- **The release train is no longer read from the F&O Provisioning App Anchor Solution.** Microsoft has confirmed that this Dataverse record is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API that this pipeline uses. In 2.4.2 the train came from it, so it went stale after the pipeline's first apply: the ten environments moved to 10.0.49.3 in the 2.4.1 incident still read 10.0.48, and 2.4.2 would have skipped every 10.0.49 PQU for them (and treated 10.0.49 patches as a "version update"). The Anchor Solution is now used only to detect that F&O is installed, never its version.
+- **Multi-version `finopsversions` responses were read as "no versions listed".** When the route returned a bare JSON array with two or more entries, `ConvertTo-FinOpsVersionList` probed `$Json.value` (and similar) on the array. PowerShell member enumeration returns one `$null` per entry, which is truthy for two or more entries, so the real list was replaced by `$null`s. Single-entry responses and responses wrapped in `{"value": [...]}` were unaffected. The parser now only unwraps an object, never an array.
+- **F&O detection depended on package order.** `Get-FinOpsMarkerPackage` returned the first installed package whose display name contained "finance and operations". If another such app (for example a virtual entity solution) was listed first, the wrong package was treated as the provisioning app and the real one was sent to the Phase 1 install loop. Unique-name markers are now checked across all packages first, and the display-name fallback ignores virtual entity, dual-write and package manager apps.
+- **An F&O environment whose Dataverse read failed vanished from the F&O phase.** Detection now happens before the Dataverse read, and the F&O phase no longer needs anything from Dataverse.
+
+### Added
+
+- **Release train from the live application build.** `applicationVersion` from `finopsproperties` (for example `10.0.2645.136`) is mapped by build prefix to its release train. Built-in map from Microsoft's PQU release schedule: `10.0.2428` = 10.0.46, `10.0.2527` = 10.0.47, `10.0.2645` = 10.0.48, `10.0.2790` = 10.0.49. The live train is shown on every environment line, e.g. `10.0.2645.136 [10.0.48]`.
+- **`finOpsBuildTrainMap`** variable: extra prefix-to-train entries such as `10.0.2900=50`, so a new release needs no code change. The effective map is printed under Effective settings; malformed entries are ignored with a warning. An unknown prefix skips the apply (unless scope is `Any`) and the log names the prefix to add.
+- **Lower-train guard, in every scope.** A version on a lower train than the live build is never applied, whether chosen automatically or set in `finOpsTargetVersion`. New counter "skipped (lower train)".
 
 ### Changed
 
-- **Never-older guard, in every scope.** The Anchor Solution lags the live build but never leads it, so its full version is a lower bound on what is running. A version at or below it is never applied, whether chosen automatically or set in `finOpsTargetVersion`, including with `Any`. Previously the script relied on the apply endpoint to refuse an older version, which was never verified. New counter "skipped (not newer)". The guard is inactive when the Anchor version is not in the `10.0.<train>.<patch>` shape.
 - **`VersionUpdate` is bounded.** It now selects only the **next** release train (current + 1) and only versions staged `GeneralAvailability` or `QualityUpdate`. In 2.4.2 it accepted any higher train and any stage, so one run could jump several trains or apply a preview build, including on `UnifiedProduction`. A deliberate multi-train move now needs `Any` plus an explicit `finOpsTargetVersion`.
 - Power Platform and BAP tokens are refreshed once they are 45 minutes old, so long runs stay inside token lifetime within the 180-minute job timeout.
 - The Dataverse managed-solution query no longer uses `$top`, which suppressed `@odata.nextLink` paging.
@@ -33,12 +39,12 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Documentation
 
-- README, `docs/parameters.md`, `docs/setup.md`, `CONTRIBUTING.md` and the pipeline header describe the never-older guard and the bounded `VersionUpdate`. The 2.4.2 statement that "the apply endpoint never downgrades" is replaced: that behaviour has not been verified, so the script no longer relies on it.
-- CONTRIBUTING invariant 6 now says the Anchor Solution may only narrow an apply, never widen it. Invariant 7 adds bounding and "do not rely on unverified platform refusals". New traps: member enumeration on arrays, `$top` with paging.
+- README, `docs/parameters.md`, `docs/setup.md` and the pipeline header describe the live-build train, the build map and how to extend it each release, the lower-train guard and the bounded `VersionUpdate`. `docs/setup.md` has a step-by-step for adding a new release.
+- CONTRIBUTING invariant 6 now forbids using the Anchor Solution version for any F&O decision. Invariant 7 adds "take inputs from live state", bounding, and "do not rely on unverified platform refusals". New traps: member enumeration on arrays, `$top` with paging.
 
 ## [2.4.2] - 2026-10-06
 
-> **Superseded by 2.4.3.** `VersionUpdate` could jump several trains or pick a non-released build, and multi-version responses could be read as "no versions listed".
+> **Superseded by 2.4.3.** Its release train came from the Anchor Solution, which only changes on LCS-driven updates and goes stale after the first apply through this pipeline. `VersionUpdate` could also jump several trains or pick a non-released build, and multi-version responses could be read as "no versions listed".
 
 ### Fixed
 

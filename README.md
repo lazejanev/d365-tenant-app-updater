@@ -19,7 +19,7 @@
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
 > **Important: upgrade from v2.4.0, v2.4.1 or v2.4.2**
-> With `finOpsApplyVersion = true` and `finOpsUpdateScope = QualityUpdate`, v2.4.0 and v2.4.1 could move an environment to a **new release train** (for example 10.0.48 to 10.0.49), because they only checked Microsoft's `releaseStage` label. v2.4.2 added the release-train check. v2.4.3 adds a never-older guard, limits `VersionUpdate` to the next train and released builds, and fixes a parsing bug that reported multi-version lists as "no versions listed". Upgrade before running with `finOpsApplyVersion = true`.
+> With `finOpsApplyVersion = true` and `finOpsUpdateScope = QualityUpdate`, v2.4.0 and v2.4.1 could move an environment to a **new release train** (for example 10.0.48 to 10.0.49), because they only checked Microsoft's `releaseStage` label. v2.4.2 added a release-train check, but read the train from the F&O Provisioning App Anchor Solution, which Microsoft only updates for LCS-driven updates, so it went stale after the first apply through this pipeline. v2.4.3 reads the train from the **live application build** instead, limits `VersionUpdate` to the next train and released builds, and fixes a parsing bug that reported multi-version lists as "no versions listed". Upgrade before running with `finOpsApplyVersion = true`.
 
 ## The goal
 
@@ -71,9 +71,9 @@ Azure DevOps pipeline (azure-pipelines.yml)
         |       APPLY    -> POST .../finopsversions/{version}/apply
         |     finOpsUpdateScope selects WHICH kind of version is eligible,
         |     using Microsoft's releaseStage AND the environment's current
-        |     release train, and never a version at or below the
-        |     environment's Anchor Solution version. LCS managed
-        |     environments are inventoried but never version-updated.
+        |     release train, read from the LIVE application build
+        |     (10.0.2645.x = 10.0.48). LCS managed environments are
+        |     inventoried but never version-updated.
         v
    Updated tenant + F&O inventory
 ```
@@ -131,6 +131,7 @@ Full permission setup is in [docs/permissions.md](docs/permissions.md). It is th
 | `finOpsTargetVersion` | (blank = highest matching scope) | Specific F&O version to apply. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | Extra allow-list for the F&O apply phase only. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a version apply. |
+| `finOpsBuildTrainMap` | (blank = built-in 10.0.46 to 10.0.49) | Extra live-build-prefix to release-train entries, e.g. `10.0.2900=50`. Add one line per new release. See [Finance and Operations](#finance-and-operations). |
 
 `whatIf`, `usePacFallback`, `finOpsApplyVersion`, `finOpsUpdateScope` and `finOpsTargetVersion` are also exposed as **runtime parameters**, so you can override them for a single manual run.
 
@@ -157,12 +158,12 @@ Two variables govern this phase: `finOpsApplyVersion` (the only on/off switch, d
 For every detected F&O environment the pipeline reports a single compact line, for example:
 
 ```
-Dev04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
+Dev04: 10.0.2645.136 [10.0.48] (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
 ```
 
 > Environment names above (`Dev01`, `Dev02`, ...) are illustrative placeholders. Your own log will show your actual environment display names.
 
-Expand the environment's group to see AOS counts, demo dataset, the F&O Provisioning App Anchor Solution version and the current release train it implies. This runs every time, regardless of `finOpsApplyVersion`.
+The `[10.0.48]` is the release train of the live build. Expand the environment's group to see AOS counts, demo dataset, and which build prefix the train came from. This runs every time, regardless of `finOpsApplyVersion`.
 
 ### Update scope: PQU vs. a new release train
 
@@ -174,13 +175,24 @@ Expand the environment's group to see AOS counts, demo dataset, the F&O Provisio
 | `VersionUpdate` | **version update** | The version is on the **next** release train (current + 1, e.g. 10.0.48 to 10.0.49) and is staged `GeneralAvailability` or `QualityUpdate`. It never jumps several trains at once and never picks a preview or unknown stage. |
 | `Any` | - | The numerically highest version, no train or stage restriction. |
 
-The environment's current release train is the 3rd segment of the F&O Provisioning App Anchor Solution version (the `48` in `10.0.48.6`). That solution's version lags behind the live environment, but it never runs ahead of it.
+### Where the current release train comes from
 
-**If the current train cannot be determined, the apply is skipped** (unless the scope is `Any`). The design is fail-safe: it can miss a patch, but `QualityUpdate` can never move an environment to a new release train.
+From the environment's **live application build**, the `applicationVersion` that `finopsproperties` returns on every run (for example `10.0.2645.136`). Every PQU of a release shares one build prefix, which Microsoft publishes in the [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule):
 
-**Never older than the Anchor Solution (every scope).** Because the Anchor Solution lags but never leads, its full version is a lower bound on what the environment is running. A version at or below it is never applied, even with `Any` or an explicit `finOpsTargetVersion`. The log reads "no eligible version newer than the Anchor Solution". The script does not rely on the apply endpoint to refuse a downgrade.
+| Build prefix | Release train |
+|---|---|
+| `10.0.2428` | 10.0.46 |
+| `10.0.2527` | 10.0.47 |
+| `10.0.2645` | 10.0.48 |
+| `10.0.2790` | 10.0.49 |
 
-**Known limitation.** The Anchor Solution is not updated by every update path. If an environment has moved to a new train but its Anchor Solution still shows the old one, `QualityUpdate` skips it, and `VersionUpdate` may treat a patch on the real train as the "next train". Neither can apply anything at or below the Anchor, or more than one train past it. See [docs/parameters.md](docs/parameters.md) for the one residual case, which observed platform behaviour suggests does not occur. Check the "Current train" line in the environment's diagnostic detail if an environment is unexpectedly skipped.
+These are built in. **When Microsoft ships a new release**, add its prefix to the `finOpsBuildTrainMap` variable, for example `10.0.2900=50` (take the prefix from the "Application Version" column of that page). No code change is needed.
+
+**If the build is not in the map, the apply is skipped** (unless the scope is `Any`), and the log names the exact prefix to add. The design is fail-safe: it can miss a patch, but `QualityUpdate` can never move an environment to a new release train.
+
+**Never a lower train (every scope).** A version on a lower train than the live build is never applied, even with `Any` or an explicit `finOpsTargetVersion`. Microsoft also documents that the version list only offers versions later than the installed one.
+
+**Why not the F&O Provisioning App Anchor Solution.** Microsoft has confirmed that the Anchor Solution's version in Dataverse is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API that this pipeline uses. After the first apply it is permanently stale. v2.4.2 read the train from it; v2.4.3 uses it only to detect that F&O is installed, never its version.
 
 To move more than one release train in a single run, set `finOpsUpdateScope = Any` **and** an explicit `finOpsTargetVersion`, so the jump is a deliberate choice.
 
@@ -245,7 +257,7 @@ Some first-party apps use a guided wizard in the Power Platform Admin Center and
 - Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions.
 - Available versions depend on what the tenant's release channel exposes.
 - The `finopsversions` route has observed intermittent availability. See above.
-- The current F&O release train is read from the Anchor Solution, which does not update on every path. `QualityUpdate` skips an environment rather than guess when this is unclear.
+- The current F&O release train comes from a build-prefix map. Each new release needs one entry in `finOpsBuildTrainMap` (a release ships roughly every quarter). Until it is added, environments on that release are skipped, not guessed.
 - Tokens are refreshed after 45 minutes, so long runs across many environments keep working within the 180-minute job timeout.
 - LCS managed environments are inventoried only, by design.
 - Install operations are triggered but not polled to completion. The run reports the operation id and moves on.

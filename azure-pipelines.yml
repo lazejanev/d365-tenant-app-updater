@@ -37,12 +37,16 @@
 #                     Any           - the numerically highest version,
 #                                     no train or stage restriction.
 #                   The environment's current release train is read from
-#                   the 3rd segment of the F&O Provisioning App Anchor
-#                   Solution version. If it cannot be determined, the
-#                   apply is SKIPPED (fail-safe) unless the scope is Any.
-#                   In EVERY scope, a version at or below the Anchor
-#                   Solution version is never applied (v2.4.3): the
-#                   Anchor lags the live build but never leads it.
+#                   its LIVE application build (finopsproperties
+#                   applicationVersion, e.g. 10.0.2645.x = 10.0.48) via a
+#                   build-prefix map (v2.4.3). Built in: 10.0.46 to
+#                   10.0.49. Add new releases with finOpsBuildTrainMap,
+#                   e.g. 10.0.2900=50. If the train cannot be determined,
+#                   the apply is SKIPPED (fail-safe) unless scope is Any.
+#                   In EVERY scope, a version on a lower train than the
+#                   live build is never applied.
+#                   The F&O Provisioning App Anchor Solution is NOT used:
+#                   Microsoft only updates it for LCS-driven updates.
 #                   WARNING: v2.4.0 and v2.4.1 checked releaseStage only.
 #                   releaseStage describes the build itself, not its
 #                   relation to the environment, so a QualityUpdate on a
@@ -76,7 +80,7 @@
 #     dumpSolutionCatalog, retryFailedInstalls, whatIf, usePacFallback,
 #     environmentFilter, environmentExclude, appExclude,
 #     finOpsApplyVersion, finOpsTargetVersion, finOpsEnvironmentFilter,
-#     finOpsDeploymentTypes, finOpsUpdateScope
+#     finOpsDeploymentTypes, finOpsUpdateScope, finOpsBuildTrainMap
 #
 #   Retired: updateFinOpsVersion and finOpsInventory. Both are ignored. If
 #   either is still in the variable group the script says so once in the
@@ -223,6 +227,9 @@ stages:
               AppExclude:              $(appExclude)
               FinOpsEnvironmentFilter: $(finOpsEnvironmentFilter)
               FinOpsDeploymentTypes:   $(finOpsDeploymentTypes)
+              # Extra live-build-prefix -> release-train entries (v2.4.3),
+              # e.g. 10.0.2900=50. Blank uses the built-in map only.
+              FinOpsBuildTrainMap:     $(finOpsBuildTrainMap)
               # Both the library value and the queue-time override are passed.
               # The script prefers override, then library, then its default.
               WhatIf:                      $(whatIf)
