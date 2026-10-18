@@ -127,7 +127,10 @@ function Get-AccessToken {
     # If the federated sign-in is refused (for example no federated
     # credential on the app registration yet) and a secret exists, switch
     # to the secret for the rest of the run.
-    if ((-not (Test-HttpOk $r) -or -not $r.Json.access_token) -and $script:AuthState.Mode -eq 'Federated' -and $Settings.AuthMode -eq 'Auto' -and -not (Test-Unset $Settings.ClientSecret)) {
+    # Only the run's first token decides this: a later refusal for one
+    # environment's Dataverse scope is not a federation problem.
+    $firstToken = ($script:TokenCache.Count -eq 0)
+    if ($firstToken -and (-not (Test-HttpOk $r) -or -not $r.Json.access_token) -and $script:AuthState.Mode -eq 'Federated' -and $Settings.AuthMode -eq 'Auto' -and -not (Test-Unset $Settings.ClientSecret)) {
         $why = Get-ApiErrorMessage $r
         if ($r.Json -and $r.Json.error_description) { $why = [string]$r.Json.error_description }
         Write-RunWarning "Federated sign-in ($($script:AuthState.Source) OIDC) was refused, so the client secret is used instead. Add the federated credential to stop using the secret. $(Format-RestFailure $r). $why"

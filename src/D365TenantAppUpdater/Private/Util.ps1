@@ -7,6 +7,18 @@ function Get-Count {
     return $n
 }
 
+function ConvertTo-SafeBool {
+    # For switches where a typo must not silently pick the unsafe value:
+    # recognised true/false words win; anything else keeps the safe
+    # default and returns a warning. Returns { Value; Warning }.
+    param([AllowEmptyString()] [string] $Text, [bool] $SafeDefault, [string] $Name)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return [pscustomobject]@{ Value = $SafeDefault; Warning = '' } }
+    $t = $Text.Trim().ToLowerInvariant()
+    if (@('true', '1', 'yes', 'y', 'on') -contains $t) { return [pscustomobject]@{ Value = $true; Warning = '' } }
+    if (@('false', '0', 'no', 'n', 'off') -contains $t) { return [pscustomobject]@{ Value = $false; Warning = '' } }
+    return [pscustomobject]@{ Value = $SafeDefault; Warning = "$Name value '$Text' is not true or false. Using the safe value $($SafeDefault.ToString().ToLowerInvariant())." }
+}
+
 function ConvertTo-Bool {
     param([AllowEmptyString()] [string] $Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }

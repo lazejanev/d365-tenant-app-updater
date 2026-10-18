@@ -21,7 +21,7 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 
 | Azure DevOps | GitHub | Secret | Description |
 |---|---|---|---|
-| `ClientId` | `D365_CLIENT_ID` (variable) | No | Entra ID application (client) id of the service principal. Optional in `azure-pipelines-federated.yml`, where the service connection supplies it. |
+| `ClientId` | `D365_CLIENT_ID` (variable) | No | Entra ID application (client) id of the service principal. |
 | `ClientSecret` | `D365_CLIENT_SECRET` (secret) | **Yes** | Client secret value. Required in `azure-pipelines.yml`. Optional on GitHub, where OpenID Connect is used and the secret is only the backup. Not used by `azure-pipelines-federated.yml`. |
 | `TenantId` | `D365_TENANT_ID` (variable) | No | Entra ID directory (tenant) id. |
 
@@ -52,7 +52,7 @@ Tokens are cached per API and renewed five minutes before they expire, so long r
 
 | Variable | Default | Description |
 |---|---|---|
-| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail (installed-vs-available diffs, F&O AOS/demo detail, current release train and the build prefix it came from). |
+| `dumpDiagnostics` | `true` | List, per environment, the apps that have no matching managed solution (and so are not evaluated). Everything else (planned actions, holds, the F&O table with live build, train and offered versions) is always in the log and the run summary. |
 | `dumpSolutionCatalog` | `false` | Dump every Dataverse managed solution matching a broad generic-app hint list. Separate from `dumpDiagnostics` because on a Sales-heavy environment this alone can run to 150+ lines unrelated to F&O. |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install ended in `InstallFailed`. |
 | `whatIf` | `false` | Plan only. Report what would change without changing anything. In the default PlanAndApply mode, `whatIf = true` makes the run a Plan run. |
@@ -61,7 +61,7 @@ Tokens are cached per API and renewed five minutes before they expire, so long r
 | `environmentExclude` | (blank = none) | Deny-list of environment names/ids to always skip. |
 | `appExclude` | (blank) | Deny-list of app names/ids to always skip. Exact names or `*` wildcards. Partial (substring) matches still work but are deprecated, see [App scoping](#app-scoping-appexclude). |
 | `waitForInstallsMinutes` **(v3)** | `30` | After triggering app installs, wait up to this many minutes for them to finish and report each outcome (succeeded, failed, still running). `0` = do not wait, as in v2. F&O version applies run for hours and are verified by the next run. |
-| `failOnIssues` **(v3)** | `false` | When something could not be read or an install failed, the run ends "with issues": orange on Azure DevOps, green with warning annotations on GitHub. Set `true` to fail the run (exit code 1) instead, for example to trigger a notification. |
+| `failOnIssues` **(v3)** | `false` | When something could not be read or an install failed, the run ends "with issues": orange on Azure DevOps, green with warning annotations on GitHub. Set `true` to fail the run (exit code 1, red) instead, for example to trigger a failure notification. The **Plan** stage is never failed by it, so one unreadable environment does not stop the applies for every other environment: the Apply stages (and PlanAndApply runs) fail instead, and only for problems in their own actions. |
 
 ### Production ring (v3)
 
@@ -92,7 +92,7 @@ The F&O phase has **one on/off switch** (`finOpsApplyVersion`) and **one scope c
 | `finOpsApplyVersion` | `false` | **The only on/off switch.** Set to `true` to apply a new F&O application version on eligible environments. Everything else in this table only refines what/where/which kind an apply targets; none of them enable an apply on their own. |
 | `finOpsUpdateScope` | `QualityUpdate` | Restricts **which kind** of available version may be selected. See "How scope is decided" below. Displayed in the log as **PQU** (`QualityUpdate`) or **version update** (`VersionUpdate`). |
 | `finOpsTargetVersion` | (blank = highest matching scope) | A specific F&O application version to apply, for example `10.0.49.3`. Blank selects the highest version that matches `finOpsUpdateScope` per environment. A named version is still checked against the scope (unless scope is `Any`) and reported if it doesn't match. |
-| `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list applied to the F&O phase only, on top of `environmentFilter` and `environmentExclude`. |
+| `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list for the F&O phase (inventory and apply), on top of `environmentFilter` and `environmentExclude`. The apps phase still runs everywhere. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a **version apply**. Inventory is always collected regardless. LCS types are excluded by default. |
 | `finOpsScheduleUrl` | Microsoft's PQU schedule (public source of the Learn page) | Where the release map is downloaded from at the start of the F&O phase. `none` disables the download, leaving the built-in map only. You never need to set this. |
 | `finOpsBuildTrainMap` | (blank) | **Emergency override only.** Comma-separated `10.0.<build>=<train>` entries (e.g. `10.0.2900=50` or `10.0.2900=10.0.50`), applied on top of everything else. Not needed in normal use. Malformed entries are ignored with a warning. |
@@ -134,7 +134,7 @@ Order of precedence: built-in fallback, then Microsoft's schedule, then the opti
 
 **Why not the F&O Provisioning App Anchor Solution.** v2.4.2 read the train from the 3rd segment of the Anchor Solution version in Dataverse. Microsoft has confirmed that this record is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API, which is the path this pipeline uses. After the first apply through this pipeline it is permanently stale: the environments moved to 10.0.49.3 in the v2.4.1 incident still read 10.0.48, so v2.4.2 would have skipped every 10.0.49 PQU for them. v2.4.3 uses the Anchor Solution only to detect that F&O is installed, never its version.
 
-Check the "Current train" line in the environment's diagnostic detail when an environment behaves unexpectedly.
+Check the **Train** column of the Finance and Operations table in the run summary when an environment behaves unexpectedly.
 
 > **v2.4.0 and v2.4.1 used `releaseStage` alone.** Because a quality update on a newer train is also staged `QualityUpdate`, `QualityUpdate` scope in those versions could move environments to a new release train. This was confirmed live (10.0.48 environments moved to 10.0.49.3) and fixed in v2.4.2.
 
@@ -161,7 +161,7 @@ Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional
 | `-PlanFile` | path | The plan to apply. Default: `plan.json` in the output directory. |
 | `-OutputDirectory` | path | Where the plan and reports go. Default: the pipeline's artifact staging directory (Azure DevOps), `RUNNER_TEMP` (GitHub), or `./d365-tenant-app-updater-output`. |
 
-Apply never improvises. An action is skipped and reported (`Stale`) when the app's available version changed since the plan, or an F&O version is no longer offered; `AlreadyDone` when the environment already has it. The next plan decides again.
+Apply never improvises. An action is skipped and reported as `Stale` when the app's available version changed since the plan or an F&O version is no longer offered, `AlreadyDone` when the environment already has it, and `Stopped` when the current settings no longer allow it (for example the environment was added to `environmentExclude`, the app to `appExclude`, `finOpsApplyVersion` was turned off, or `productionRing` was turned on after a plan made without it). The next plan decides again.
 
 Every run writes **summary.md** (shown on the run page: the Extensions tab on Azure DevOps, the job summary on GitHub) and **report.json**. Environments and apps are processed and listed A to Z, ignoring case; within an apply, non-production goes before production.
 
@@ -227,11 +227,15 @@ The default is blank. Apps that require the Power Platform Admin Center install 
 
 ## Finance and Operations scoping
 
-Two additional controls apply only to the F&O apply phase. Inventory always ignores these and covers every detected F&O environment.
+Two additional controls apply only to the Finance and Operations phase.
 
 ### `finOpsEnvironmentFilter`
 
-An extra allow-list layered on top of the normal environment scoping, applying to apply eligibility only. Useful when you want app updates everywhere but F&O version apply restricted to a subset.
+An extra allow-list layered on top of the normal environment scoping. Environments outside it are left out of the F&O phase entirely (no inventory row, no apply); the apps phase still runs for them. Useful when you want app updates everywhere but F&O handled for a subset.
+
+### Production ring and F&O
+
+A non-production F&O environment proves a version for production only when this tool can update it (its deployment type is in `finOpsDeploymentTypes`) and its offered list was read successfully, and either it is on a higher release train than the version, or it is on the same train, its live build is higher than production's, and the version is no longer offered to it. An empty or failed version list on its own never counts as proof.
 
 ### `finOpsDeploymentTypes`
 

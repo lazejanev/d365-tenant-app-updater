@@ -159,28 +159,37 @@ function Select-FinOpsTarget {
 function Test-FinOpsProven {
     <#
     .SYNOPSIS
-        Production ring rule for F&O. A non-production F&O environment proves
-        a target when it already runs it or later:
+        Production ring rule for F&O. Only a non-production F&O environment
+        this tool can update (eligible deployment type) and whose offered
+        list was read successfully can prove a target, and only when:
           - its live train is higher than the target's train, or
-          - its live train equals the target's train and the target is NOT
-            in its offered list (Microsoft offers only versions later than
-            the installed one, so it already has it).
+          - its live train equals the target's train, its live build is
+            higher than production's live build (it really moved ahead),
+            and the target is NOT in its offered list (Microsoft offers
+            only versions later than the installed one, so it already has
+            it or something newer on that train).
+        Both signals are needed for the same-train case, so an empty or
+        partial list (a platform hiccup) alone never proves anything.
         Data for every environment is collected before planning, so the
         check is independent of alphabetical order.
     #>
-    param($States, [string] $Target)
+    param($States, [string] $Target, $ProductionState = $null)
     $tt = Get-FinOpsTrain $Target
     if ($null -eq $tt) { return [pscustomobject]@{ Proven = $false; By = ''; Reason = "train of '$Target' unknown" } }
+    $prodBuild = ''
+    if ($ProductionState) { $prodBuild = [string]$ProductionState.AppVersion }
     $candidates = 0
     foreach ($s in $States) {
         if ($s.Env.Ring -ne 'NonProduction' -or $s.PropsError -or $null -eq $s.Train) { continue }
+        if (-not $s.Eligible -or -not $s.VersionsRead) { continue }
         $candidates++
         if ($s.Train -gt $tt) { return [pscustomobject]@{ Proven = $true; By = $s.Env.DisplayName; Reason = '' } }
-        if ($s.Train -eq $tt -and $s.VersionsRead -and (@($s.Versions | ForEach-Object { $_.Version }) -notcontains $Target)) {
+        if ($s.Train -eq $tt -and $prodBuild -and (Test-UpdateAvailable -Available ([string]$s.AppVersion) -Installed $prodBuild) -and
+            (@($s.Versions | ForEach-Object { $_.Version }) -notcontains $Target)) {
             return [pscustomobject]@{ Proven = $true; By = $s.Env.DisplayName; Reason = '' }
         }
     }
-    if ($candidates -eq 0) { return [pscustomobject]@{ Proven = $false; By = ''; Reason = 'no non-production F&O environment in scope to prove it' } }
+    if ($candidates -eq 0) { return [pscustomobject]@{ Proven = $false; By = ''; Reason = 'no updatable non-production F&O environment in scope to prove it' } }
     return [pscustomobject]@{ Proven = $false; By = ''; Reason = "no non-production F&O environment runs $Target yet" }
 }
 
@@ -207,7 +216,7 @@ function New-FinOpsPlan {
             continue
         }
         if ($Settings.ProductionRing -and $s.Env.Ring -eq 'Production') {
-            $pr = Test-FinOpsProven -States $States -Target $sel.Target
+            $pr = Test-FinOpsProven -States $States -Target $sel.Target -ProductionState $s
             if (-not $pr.Proven) {
                 $decisions += New-FinOpsDecision -State $s -Outcome 'Skip' -Code 'HeldForProduction' -Reason "held for production: $($pr.Reason)" -To $sel.Target -Stage $sel.Stage
                 continue

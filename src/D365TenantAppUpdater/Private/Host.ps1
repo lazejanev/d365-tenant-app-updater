@@ -110,8 +110,11 @@ function Complete-Run {
     switch ($Result) {
         'Succeeded' { return 0 }
         'SucceededWithIssues' {
+            if ($FailOnIssues) {
+                if ((Get-HostKind) -eq 'AzureDevOps') { Write-Host '##vso[task.complete result=Failed;]Completed with issues and failOnIssues = true. See the run summary.' }
+                return 1
+            }
             if ((Get-HostKind) -eq 'AzureDevOps') { Write-Host '##vso[task.complete result=SucceededWithIssues;]Completed with issues. See the run summary.' }
-            if ($FailOnIssues) { return 1 }
             return 0
         }
         'Failed' {

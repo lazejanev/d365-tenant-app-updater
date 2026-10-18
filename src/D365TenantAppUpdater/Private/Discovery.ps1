@@ -24,12 +24,15 @@ function Get-EnvironmentRing {
           - PPAC environment type in productionEnvironmentTypes
             (default: Production)                       -> Production
           - F&O deployment type UnifiedProduction or LCSProduction -> Production
+          - environment type not reported              -> Production (fail safe)
           - anything else                              -> NonProduction
     #>
     param($EnvObj, $Settings, [AllowEmptyString()] [string] $FinOpsDeploymentType = '')
     if (Test-EnvInList -EnvObj $EnvObj -List $Settings.ProductionEnvironments) { return 'Production' }
     foreach ($t in $Settings.ProductionEnvironmentTypes) { if ([string]$EnvObj.Sku -ieq [string]$t) { return 'Production' } }
     if ($FinOpsDeploymentType -ieq 'UnifiedProduction' -or $FinOpsDeploymentType -ieq 'LCSProduction') { return 'Production' }
+    # Unknown type: treat as production so it is never updated unproven.
+    if ([string]::IsNullOrWhiteSpace([string]$EnvObj.Sku)) { return 'Production' }
     return 'NonProduction'
 }
 
@@ -44,7 +47,8 @@ function Get-TenantEnvironments {
     $uri = "$($Settings.BapApiRoot)/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments?`$expand=properties&api-version=$($Settings.BapApiVersion)"
     $all = @()
     $pages = 0
-    while ($uri -and $pages -lt 50) {
+    $maxPages = 50
+    while ($uri -and $pages -lt $maxPages) {
         $pages++
         $r = Invoke-Http -Method 'GET' -Uri $uri -Headers (Get-BapHeaders $Settings)
         if (-not (Test-HttpOk $r)) { throw "Could not list environments: $(Format-RestFailure $r). $(Get-ApiErrorMessage $r)" }
@@ -52,6 +56,8 @@ function Get-TenantEnvironments {
         $uri = $null
         if ($r.Json.PSObject.Properties['nextLink'] -and $r.Json.nextLink) { $uri = [string]$r.Json.nextLink }
     }
+    $warnings = @()
+    if ($uri) { $warnings += "The environment list has more than $maxPages pages; only the first $maxPages were read." }
 
     $environments = @()
     $skippedNoDataverse = 0
@@ -65,6 +71,7 @@ function Get-TenantEnvironments {
         if ($e.properties.PSObject.Properties['environmentSku'] -and $e.properties.environmentSku) { $sku = [string]$e.properties.environmentSku }
         $obj = [pscustomobject]@{ Id = [string]$e.name; DisplayName = $dn; InstanceUrl = [string]$instanceUrl; Sku = $sku; Ring = 'NonProduction' }
         $obj.Ring = Get-EnvironmentRing -EnvObj $obj -Settings $Settings
+        if (-not $sku -and $Settings.ProductionRing) { $warnings += "$dn`: the environment type was not reported, so it is treated as production." }
         $environments += $obj
     }
 
@@ -81,5 +88,6 @@ function Get-TenantEnvironments {
         InScope      = @(Sort-ByDisplayName $scoped)
         Excluded     = @(Sort-ByDisplayName $excluded)
         NoDataverse  = $skippedNoDataverse
+        Warnings     = $warnings
     }
 }

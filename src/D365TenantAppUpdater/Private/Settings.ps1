@@ -108,6 +108,14 @@ function Get-RunSettings {
     $wait = 30
     if (-not [int]::TryParse($raw.WaitForInstallsMinutes, [ref]$wait) -or $wait -lt 0) { $warnings += "waitForInstallsMinutes '$($raw.WaitForInstallsMinutes)' is not a whole number of minutes. Using 30."; $wait = 30 }
 
+    # Safety switches: a typo keeps the safe value (ring on, plan only, no
+    # F&O apply) instead of silently picking the unsafe one.
+    $ring = ConvertTo-SafeBool -Text $raw.ProductionRing -SafeDefault $true -Name 'productionRing'
+    $planOnly = ConvertTo-SafeBool -Text $raw.WhatIf -SafeDefault $true -Name 'whatIf'
+    if ([string]::IsNullOrWhiteSpace($raw.WhatIf)) { $planOnly.Value = $false }
+    $foApply = ConvertTo-SafeBool -Text $raw.FinOpsApplyVersion -SafeDefault $false -Name 'finOpsApplyVersion'
+    foreach ($b in @($ring, $planOnly, $foApply)) { if ($b.Warning) { $warnings += $b.Warning } }
+
     $retired = @()
     foreach ($r in $script:RetiredSettings) { if (-not (Test-Unset (Get-EnvValue $r))) { $retired += $r } }
     if ((Get-Count $retired) -gt 0) { $warnings += "These variables no longer exist and are ignored: $(Join-Names $retired). Remove them." }
@@ -127,19 +135,19 @@ function Get-RunSettings {
         DumpDiagnostics            = ConvertTo-Bool $raw.DumpDiagnostics
         DumpSolutionCatalog        = ConvertTo-Bool $raw.DumpSolutionCatalog
         RetryFailedInstalls        = ConvertTo-Bool $raw.RetryFailedInstalls
-        PlanOnly                   = ConvertTo-Bool $raw.WhatIf
+        PlanOnly                   = $planOnly.Value
         UsePacFallback             = ConvertTo-Bool $raw.UsePacFallback
         EnvironmentFilter          = @(Split-List $raw.EnvironmentFilter)
         EnvironmentExclude         = @(Split-List $raw.EnvironmentExclude)
         AppExclude                 = @(Split-List $raw.AppExclude)
-        FinOpsApplyVersion         = ConvertTo-Bool $raw.FinOpsApplyVersion
+        FinOpsApplyVersion         = $foApply.Value
         FinOpsTargetVersion        = $raw.FinOpsTargetVersion
         FinOpsEnvironmentFilter    = @(Split-List $raw.FinOpsEnvironmentFilter)
         FinOpsDeploymentTypes      = @(Split-List $raw.FinOpsDeploymentTypes)
         FinOpsUpdateScope          = $scope
         FinOpsBuildTrainMap        = $raw.FinOpsBuildTrainMap
         FinOpsScheduleUrl          = $raw.FinOpsScheduleUrl
-        ProductionRing             = ConvertTo-Bool $raw.ProductionRing
+        ProductionRing             = $ring.Value
         ProductionEnvironmentTypes = @(Split-List $raw.ProductionEnvironmentTypes)
         ProductionEnvironments     = @(Split-List $raw.ProductionEnvironments)
         ProductionSoakDays         = $soak

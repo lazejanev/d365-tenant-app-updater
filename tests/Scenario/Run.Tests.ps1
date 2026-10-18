@@ -107,10 +107,23 @@ Describe 'Partial failures' {
         $r.Summary | Should -Match 'Needs attention'
     }
 
-    It 'returns 1 for issues when failOnIssues = true' {
+    It 'returns 1 for issues when failOnIssues = true, but never fails the Plan stage for them' {
         Set-FakeTenant -Environments @((New-FakeEnv -Id 'bad' -Name 'Bad' -PackagesStatus 500))
         $r = Invoke-TestRun -Setting @{ FailOnIssues = 'true' }
         $r.ExitCode | Should -Be 1
+        $r = Invoke-TestRun -Mode Plan -Setting @{ FailOnIssues = 'true' }
+        $r.ExitCode | Should -Be 0
+        $r.Report.result | Should -Be 'SucceededWithIssues'
+    }
+
+    It 'reports a failed PAC CLI fallback as manual, not started' {
+        function global:pac { $global:LASTEXITCODE = 1; 'pac: something went wrong' }
+        try {
+            Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0')) -InstallResponses @{ msdyn_a = @{ Status = 400; Body = @{ error = @{ code = 'X'; message = 'This application requires a custom install experience.' } } } }))
+            $r = Invoke-TestRun -Setting @{ UsePacFallback = 'true'; AuthMode = 'ClientSecret' }
+            $r.Report.results[0].Result | Should -Be 'Manual'
+        }
+        finally { Remove-Item function:global:pac -ErrorAction SilentlyContinue }
     }
 
     It 'marks Azure DevOps runs with issues as SucceededWithIssues' {

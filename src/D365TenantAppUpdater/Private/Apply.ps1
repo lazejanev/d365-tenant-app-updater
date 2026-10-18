@@ -28,7 +28,7 @@ function Initialize-Pac {
     if ($script:PacReady) { return $true }
     if (-not (Get-Command pac -ErrorAction SilentlyContinue)) { Write-RunWarning 'usePacFallback: the Power Platform CLI (pac) is not installed on the agent.'; return $false }
     try {
-        & pac auth create --name d365updater --applicationId $Settings.ClientId --clientSecret $Settings.ClientSecret --tenant $Settings.TenantId | Out-Null
+        & pac auth create --name d365updater --applicationId $Settings.ClientId --clientSecret $Settings.ClientSecret --tenant $Settings.TenantId 2>&1 | Out-Null
         $ok = ($LASTEXITCODE -eq 0)
         $global:LASTEXITCODE = 0
         $script:PacReady = $ok
@@ -41,9 +41,11 @@ function Invoke-PacInstall {
     param($Settings, [string] $EnvironmentId, [string] $UniqueName)
     if (-not (Initialize-Pac $Settings)) { return $false }
     try {
-        & pac app-management install-application-package --environment $EnvironmentId --unique-name $UniqueName
+        # Output goes to the log, never to the pipeline: the caller needs a
+        # plain bool back (a captured line of output would be truthy).
+        & pac app-management install-application-package --environment $EnvironmentId --unique-name $UniqueName 2>&1 | ForEach-Object { Write-Line "    [pac] $_" }
         if ($LASTEXITCODE -eq 0) { $global:LASTEXITCODE = 0; return $true }
-        & pac application install --environment-id $EnvironmentId --application-name $UniqueName
+        & pac application install --environment-id $EnvironmentId --application-name $UniqueName 2>&1 | ForEach-Object { Write-Line "    [pac] $_" }
         $ok = ($LASTEXITCODE -eq 0)
         $global:LASTEXITCODE = 0
         return $ok
@@ -139,6 +141,39 @@ function Invoke-FinOpsAction {
     }
     if (-not $r.Transport -and $r.Status -eq 204) { return New-ActionResult -Action $Action -Result 'AlreadyDone' -Detail 'platform confirms nothing is needed (204)' }
     return New-ActionResult -Action $Action -Result 'Failed' -Detail "apply failed: $(Format-RestFailure $r). $(Get-ApiErrorMessage $r)"
+}
+
+function Split-AllowedActions {
+    <#
+    .SYNOPSIS
+        Apply mode: re-checks each planned action against the CURRENT
+        settings. Returns { Allowed; Stopped } where Stopped are results with
+        Result 'Stopped' and the reason.
+    #>
+    param($Settings, $Actions, $Plan)
+    $allowed = @()
+    $stopped = @()
+    foreach ($a in $Actions) {
+        $envObj = [pscustomobject]@{ Id = $a.EnvironmentId; DisplayName = $a.EnvironmentName }
+        $why = ''
+        if (Test-EnvInList -EnvObj $envObj -List $Settings.EnvironmentExclude) { $why = 'environment is now in environmentExclude' }
+        elseif ((Get-Count $Settings.EnvironmentFilter) -gt 0 -and -not (Test-EnvInList -EnvObj $envObj -List $Settings.EnvironmentFilter)) { $why = 'environment is no longer in environmentFilter' }
+        elseif ($a.Phase -eq 'Apps') {
+            $pkgLike = [pscustomobject]@{ uniqueName = $a.AppUniqueName; localizedName = $a.AppName; applicationName = ''; applicationId = '' }
+            $ex = Test-AppExcluded -Pkg $pkgLike -List $Settings.AppExclude
+            if ($ex.Excluded) { $why = "app is now in appExclude ('$($ex.By)')" }
+        }
+        else {
+            if (-not $Settings.FinOpsApplyVersion) { $why = 'finOpsApplyVersion is now false' }
+            elseif ((Get-Count $Settings.FinOpsEnvironmentFilter) -gt 0 -and -not (Test-EnvInList -EnvObj $envObj -List $Settings.FinOpsEnvironmentFilter)) { $why = 'environment is no longer in finOpsEnvironmentFilter' }
+        }
+        if (-not $why -and $a.Ring -eq 'Production' -and $Settings.ProductionRing -and $Plan.PSObject.Properties['productionRing'] -and -not $Plan.productionRing) {
+            $why = 'productionRing is now on, but the plan was made without it (not proven)'
+        }
+        if ($why) { $stopped += New-ActionResult -Action $a -Result 'Stopped' -Detail $why }
+        else { $allowed += $a }
+    }
+    return [pscustomobject]@{ Allowed = $allowed; Stopped = $stopped }
 }
 
 function Invoke-PlanActions {

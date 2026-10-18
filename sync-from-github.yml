@@ -76,7 +76,10 @@ steps:
           echo "Latest GitHub release: $tag"
           source_ref="refs/tags/$tag"
         else
-          echo "##vso[task.logissue type=warning]Could not read the latest GitHub release; syncing $(targetBranch) instead."
+          # Never fall back to main: that could sync unreleased code. Nothing
+          # is changed; the next scheduled sync tries again.
+          echo "##vso[task.logissue type=error]Could not read the latest GitHub release (the GitHub API may be rate limiting this agent). Nothing was synced; the next run tries again. Set syncRef = main to sync main instead."
+          exit 1
         fi
       fi
       echo "Syncing from: $source_ref"

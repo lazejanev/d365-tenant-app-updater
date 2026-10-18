@@ -62,7 +62,8 @@ function Get-RunResult {
     #>
     param($Context)
     $failedResults = @($Context.Results | Where-Object { $_.Result -eq 'Failed' })
-    $errorDecisions = @($Context.Decisions | Where-Object { $_.Outcome -eq 'Error' })
+    $errorDecisions = @()
+    if ($Context.CountPlanErrors) { $errorDecisions = @($Context.Decisions | Where-Object { $_.Outcome -eq 'Error' }) }
     if ((Get-Count $Context.Errors) -gt 0 -or (Get-Count $failedResults) -gt 0 -or (Get-Count $errorDecisions) -gt 0) { return 'SucceededWithIssues' }
     return 'Succeeded'
 }
@@ -83,7 +84,7 @@ function Write-RunReport {
     $results = Sort-ByEnvironment $Context.Results
     $held = Sort-ByEnvironment @($Context.Decisions | Where-Object Code -eq 'HeldForProduction')
     $attentionDecisions = Sort-ByEnvironment @($Context.Decisions | Where-Object { $_.Outcome -eq 'Error' })
-    $attentionResults = Sort-ByEnvironment @($Context.Results | Where-Object { $_.Result -in @('Failed', 'Manual', 'AdminMode', 'TimedOut', 'Stale') })
+    $attentionResults = Sort-ByEnvironment @($Context.Results | Where-Object { $_.Result -in @('Failed', 'Manual', 'AdminMode', 'TimedOut', 'Stale', 'Stopped') })
     $foSkips = Sort-ByEnvironment @($Context.Decisions | Where-Object { $_.Phase -eq 'FinOps' -and $_.Outcome -eq 'Skip' -and $_.Code -ne 'HeldForProduction' })
     $envRows = @(Get-EnvironmentRows -Context $Context)
     $foRows = @()
@@ -97,7 +98,7 @@ function Write-RunReport {
     Write-Line ("  {0,-34}: {1}" -f 'Planned actions', (Get-Count $actions))
     Write-Line ("  {0,-34}: {1}" -f 'Held for production', (Get-Count $held))
     if ($Context.Applied) {
-        foreach ($k in @('Succeeded', 'Started', 'AlreadyDone', 'TimedOut', 'Stale', 'Manual', 'AdminMode', 'Failed', 'WouldApply')) {
+        foreach ($k in @('Succeeded', 'Started', 'AlreadyDone', 'TimedOut', 'Stale', 'Stopped', 'Manual', 'AdminMode', 'Failed', 'WouldApply')) {
             $n = Get-Count @($results | Where-Object Result -eq $k)
             if ($n -gt 0) { Write-Line ("  {0,-34}: {1}" -f "Results: $k", $n) }
         }

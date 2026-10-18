@@ -19,7 +19,7 @@ Major version: production is held back by default, and the run is split into Pla
 ### Added
 
 - **Production ring, on by default** (`productionRing`). A production environment only takes a version that a non-production environment in scope already runs: apps by installed solution version, F&O by live release train and offered list. Production is PPAC type Production (`productionEnvironmentTypes`), environments named in `productionEnvironments`, and F&O deployment types `UnifiedProduction` / `LCSProduction`. Optional `productionSoakDays` for apps. Held items are listed with the reason.
-- **Plan and Apply.** `-Mode Plan` writes `plan.json` and changes nothing; `-Mode Apply -Ring NonProduction|Production` applies a plan after re-checking every action against the live tenant (`Stale` and `AlreadyDone` are reported, never improvised). `-Mode PlanAndApply` (default) keeps the v2 single-run behaviour.
+- **Plan and Apply.** `-Mode Plan` writes `plan.json` and changes nothing; `-Mode Apply -Ring NonProduction|Production` applies a plan after re-checking every action against the live tenant and the current settings (`Stale`, `AlreadyDone` and `Stopped` are reported, never improvised). `-Mode PlanAndApply` (default) keeps the v2 single-run behaviour.
 - **Azure DevOps pipeline with three stages**: Plan, Apply non-production, Apply production (a deployment to the `d365-production` environment, where an Approvals check can be added). Shared templates in `pipelines/templates/`.
 - **GitHub Actions support**: `.github/workflows/tenant-app-updater.yml` with the same three jobs, OpenID Connect sign-in, and the `d365-production` environment for optional required reviewers. Setup: [docs/setup-github.md](docs/setup-github.md).
 - **Federated sign-in, no secret**: GitHub OIDC, and Azure DevOps workload identity federation through `azure-pipelines-federated.yml` (preview). `authMode` (`Auto`, `Federated`, `ClientSecret`): in `Auto` a refused federated sign-in falls back to the client secret with a warning.
@@ -28,7 +28,7 @@ Major version: production is held back by default, and the run is split into Pla
 - **A to Z everywhere**: environments and apps are processed and listed alphabetically, ignoring case; non-production is applied before production.
 - F&O inventory shows each environment's **maintenance window** (`finopsadminsettings`).
 - `failOnIssues`: fail the run (exit code 1) instead of finishing with issues.
-- **Tests and CI**: Pester suite (101 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
+- **Tests and CI**: Pester suite (113 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
 
 ### Changed
 
@@ -37,6 +37,8 @@ Major version: production is held back by default, and the run is split into Pla
 - Tokens are cached per API and renewed five minutes before they expire (v2: refreshed after 45 minutes).
 - 429 and 503 responses are retried (up to three attempts, honouring `Retry-After`).
 - A run where something could not be read or an install failed ends as SucceededWithIssues (orange on Azure DevOps) instead of green.
+- Safety switches (`productionRing`, `whatIf`, `finOpsApplyVersion`) keep their safe value, with a warning, when set to something that is not true or false. An environment whose type is not reported is treated as production.
+- Only GET requests are retried on 429/503; an install or apply POST is never sent twice.
 - `sync-from-github.yml` syncs the latest GitHub release by default (`syncRef = main` for the previous behaviour).
 
 ### Deprecated

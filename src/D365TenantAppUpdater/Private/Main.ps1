@@ -44,6 +44,9 @@ function Write-CollectedEnvironments {
         Write-Line 'The current release train is read from the live application build, never from the Anchor Solution. A version on a lower train is never applied.'
     }
     else { Write-Line 'Inventory only (set finOpsApplyVersion = true to enable apply).' }
+    if ($Settings.FinOpsApplyVersion) {
+        Write-RunWarning "finOpsApplyVersion is true: Finance and Operations versions will be APPLIED to eligible environments (scope $($Settings.FinOpsUpdateScope)). This changes environments and takes hours per environment."
+    }
     foreach ($d in @($Decisions | Where-Object Phase -eq 'FinOps')) {
         $line = "$($d.EnvironmentName) [$($d.Ring)]: $($d.From)"
         if ($d.Outcome -eq 'Action') {
@@ -104,7 +107,7 @@ function Invoke-D365TenantAppUpdate {
     $context = [pscustomobject]@{
         Version = $version; Mode = $effectiveMode; Ring = $Ring; OutputDirectory = $OutputDirectory; PlanFile = $PlanFile
         Environments = @(); AppStates = @(); FinOpsStates = @(); Decisions = @(); Actions = @(); Results = @()
-        Applied = $false; Errors = @(); Warnings = @($settings.Warnings)
+        Applied = $false; Errors = @(); Warnings = @($settings.Warnings); CountPlanErrors = $true
     }
 
     # ---------- sign-in ----------
@@ -136,12 +139,20 @@ function Invoke-D365TenantAppUpdate {
         Write-Line ("  {0,-27}: {1} (made {2} by {3})" -f 'Plan file', $PlanFile, $plan.createdUtc, $plan.toolVersion)
         $context.Environments = @($plan.environments)
         $context.Decisions = @($plan.decisions)
+        # Plan-time read errors were already reported (and counted) by the
+        # Plan stage; an Apply stage judges only its own actions.
+        $context.CountPlanErrors = $false
         $context.Actions = @($plan.actions | Where-Object { $Ring -eq 'All' -or $_.Ring -eq $Ring })
         $urls = @{}
         foreach ($e in @($plan.environments)) { $urls[[string]$e.Id] = [string]$e.InstanceUrl }
         $ordered = Get-OrderedActions -Actions $context.Actions -Ring $Ring
-        Write-Section "APPLY: $((Get-Count $ordered)) action(s), ring $Ring"
-        $context.Results = @(Invoke-PlanActions -Settings $settings -Actions $ordered -Revalidate $true -DryRun $settings.PlanOnly -InstanceUrls $urls)
+        # The settings may have changed since the plan (an admin excluding an
+        # environment, or turning F&O apply off, while production waited for
+        # approval). Actions the current settings no longer allow are stopped.
+        $gate = Split-AllowedActions -Settings $settings -Actions $ordered -Plan $plan
+        Write-Section "APPLY: $((Get-Count $gate.Allowed)) action(s), ring $Ring"
+        foreach ($st in $gate.Stopped) { Write-Line "  $($st.EnvironmentName): $($st.AppName) $($st.To) - stopped ($($st.Detail))" }
+        $context.Results = @($gate.Stopped) + @(Invoke-PlanActions -Settings $settings -Actions $gate.Allowed -Revalidate $true -DryRun $settings.PlanOnly -InstanceUrls $urls)
         $context.Applied = $true
         if (-not $settings.PlanOnly) { Wait-AppOperations -Settings $settings -Results $context.Results }
         $result = Write-RunReport -Settings $settings -Context $context
@@ -155,6 +166,7 @@ function Invoke-D365TenantAppUpdate {
     Write-Line "Dataverse environments: $((Get-Count $discovery.All)) | in scope: $((Get-Count $discovery.InScope)) | excluded: $((Get-Count $discovery.Excluded)) | without Dataverse (skipped): $($discovery.NoDataverse)"
     foreach ($e in $discovery.InScope) { Write-Line ("  {0,-40} {1,-14} {2}" -f $e.DisplayName, $e.Ring, $e.Sku) }
     foreach ($e in $discovery.Excluded) { Write-Line ("  {0,-40} excluded" -f $e.DisplayName) }
+    foreach ($w in @($discovery.Warnings)) { Write-RunWarning $w; $context.Warnings += $w }
 
     $collected = Invoke-Collect -Settings $settings -Discovery $discovery
     $planned = New-RunPlan -Settings $settings -Collected $collected -Version $version
@@ -169,20 +181,24 @@ function Invoke-D365TenantAppUpdate {
 
     Write-CollectedEnvironments -Settings $settings -Collected $collected -Decisions (@($plan.actions) + @($plan.decisions))
 
+    $planSaved = $false
     try {
         Save-RunPlan -Plan $plan -Path $PlanFile
+        $planSaved = $true
         Write-Line ''
         Write-Line "Plan written: $PlanFile"
     }
     catch {
-        Write-RunWarning "Could not write the plan file '$PlanFile': $(Get-ErrorText $_)"
-        if ($effectiveMode -eq 'Plan') { $context.Errors += "plan file not written: $(Get-ErrorText $_)" }
+        $msg = "Could not write the plan file '$PlanFile': $(Get-ErrorText $_)"
+        if ($effectiveMode -eq 'Plan') { Write-RunError $msg } else { Write-RunWarning $msg }
     }
-    $nonProd = Get-Count @($plan.actions | Where-Object Ring -eq 'NonProduction')
-    $prod = Get-Count @($plan.actions | Where-Object Ring -eq 'Production')
-    Set-RunOutput -Name 'hasNonProductionActions' -Value ([string]($nonProd -gt 0)).ToLowerInvariant()
-    Set-RunOutput -Name 'hasProductionActions' -Value ([string]($prod -gt 0)).ToLowerInvariant()
-    Set-RunOutput -Name 'planFile' -Value $PlanFile
+    if ($planSaved) {
+        $nonProd = Get-Count @($plan.actions | Where-Object Ring -eq 'NonProduction')
+        $prod = Get-Count @($plan.actions | Where-Object Ring -eq 'Production')
+        Set-RunOutput -Name 'hasNonProductionActions' -Value ([string]($nonProd -gt 0)).ToLowerInvariant()
+        Set-RunOutput -Name 'hasProductionActions' -Value ([string]($prod -gt 0)).ToLowerInvariant()
+        Set-RunOutput -Name 'planFile' -Value $PlanFile
+    }
 
     if ($effectiveMode -eq 'PlanAndApply') {
         $ordered = Get-OrderedActions -Actions $plan.actions -Ring $Ring
@@ -193,5 +209,11 @@ function Invoke-D365TenantAppUpdate {
     }
 
     $result = Write-RunReport -Settings $settings -Context $context
-    return (Complete-Run -Result $result -FailOnIssues $settings.FailOnIssues)
+    # A Plan run whose plan could not be written cannot feed the Apply stages.
+    if ($effectiveMode -eq 'Plan' -and -not $planSaved) { return (Complete-Run -Result 'Failed') }
+    # failOnIssues never fails the Plan stage: that would skip every apply in
+    # the tenant because one environment could not be read. The issues are
+    # reported by Plan and fail the run where the changes happen.
+    $failOnIssues = $settings.FailOnIssues -and $effectiveMode -ne 'Plan'
+    return (Complete-Run -Result $result -FailOnIssues $failOnIssues)
 }

@@ -103,19 +103,19 @@ There is a single on/off variable, `finOpsApplyVersion` (default `false`), plus 
 
 ### Inventory (always on, read-only)
 
-No configuration needed. It runs on every pipeline execution, for every environment where Finance and Operations is installed, regardless of `finOpsApplyVersion`. Per environment, the log shows one compact line, for example:
+No configuration needed. It runs on every pipeline execution, for every environment where Finance and Operations is installed (within `finOpsEnvironmentFilter`), regardless of `finOpsApplyVersion`. Per environment, the log shows one line, for example:
 
 ```
-Dev04: 10.0.2645.136 [10.0.48] (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
+Dev04 [NonProduction]: 10.0.2645.136 [10.0.48] - no PQU version available for 10.0.48. Offered: 10.0.49.3 [QualityUpdate]
 ```
 
 > The environment name above is an illustrative placeholder. Your own log will show your actual environment display names.
 
-The `[10.0.48]` is the release train of the live build. Expand the environment's collapsible group to see additional detail: AOS counts, demo dataset, and the **Current train** with the build prefix it came from.
+The `[10.0.48]` is the release train of the live build. The run summary's **Finance and Operations** table adds the platform version, deployment type, AOS count, maintenance window and every offered version.
 
 ### Version apply (opt-in, changes environments)
 
-Set `finOpsApplyVersion = true` in the variable group, or set the **Apply F&O version** dropdown to `true` for a single run. The log prints a warning block when it is enabled, and nothing else in the configuration can turn this on.
+Set `finOpsApplyVersion = true` in the variable group, or set the **Apply F&O version** dropdown to `true` for a single run. The log prints a warning when it is enabled, and nothing else in the configuration can turn this on.
 
 Run with **Plan only** set to `true` first.
 
@@ -135,7 +135,7 @@ In every scope, a version on a lower train than the live build is never applied.
 
 Optional refinements, all inert unless `finOpsApplyVersion = true`:
 
-- `finOpsEnvironmentFilter` - restrict the apply phase to specific environments, while Phase 1 and inventory still run everywhere.
+- `finOpsEnvironmentFilter` - restrict the F&O phase (inventory and apply) to specific environments, while the apps phase still runs everywhere.
 - `finOpsTargetVersion` - apply a specific version instead of the highest matching scope.
 - `finOpsDeploymentTypes` - control which deployment types are eligible for a version apply. The default excludes LCS managed environments.
 
@@ -194,7 +194,8 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 
 1. **Create the service connection.** Project settings > Service connections > New > **Azure Resource Manager** > **Workload identity federation (manual)**.
    - Name it `d365-tenant-app-updater-wif` (or change `serviceConnection` at the top of `azure-pipelines-federated.yml`).
-   - Use the **same app registration** as the updater: its Application (client) ID and Directory (tenant) ID. The scope (subscription or management group) does not matter to the updater; it only signs in as the app.
+   - Use the **same app registration** as the updater: its Application (client) ID and Directory (tenant) ID.
+   - Pick a subscription the app can read (give it **Reader** on that subscription if it has no role yet). The updater does not use Azure resources, but the `AzureCLI@2` task signs in to that subscription before it runs the script, and fails if the app has no access to it.
    - Azure DevOps shows an **Issuer** and a **Subject identifier**. Keep the page open.
 2. **Add the federated credential.** Entra ID > App registrations > the app > **Certificates & secrets > Federated credentials > Add credential** > **Other issuer**. Paste the Issuer and Subject identifier. Audience: `api://AzureADTokenExchange`. Save.
 3. Finish the service connection in Azure DevOps (Verify and save).
@@ -202,7 +203,7 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 5. Add the pipeline from `azure-pipelines-federated.yml` and authorize it to use the variable group and the service connection.
 6. Run with **Plan only** = `true`. The log shows `Sign-in : Federated (AzureDevOps OIDC)`.
 
-`ClientId` and `TenantId` are optional in this pipeline (the service connection supplies them). The `ClientSecret` variable is not used and can be deleted from the group once the federated pipeline works.
+Keep `ClientId` and `TenantId` in the variable group. (The task may also expose the service connection's identity, which the updater uses as a fallback, but do not rely on it.) The `ClientSecret` variable is not used and can be deleted from the group once the federated pipeline works.
 
 ## Troubleshooting
 
@@ -220,14 +221,15 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 | "current release train unknown (build 10.0.xxxx.x is not in Microsoft's PQU schedule or the built-in map yet)" | The release is newer than Microsoft's schedule, or the schedule could not be downloaded | Usually resolves itself on a later run once Microsoft publishes the release. If the log also shows "PQU schedule was not used", check the agent's outbound access to `raw.githubusercontent.com`. |
 | "Microsoft's PQU schedule was not used - ..." | The schedule download failed or the page format changed | The built-in map is used meanwhile. Check outbound access from the agent; nothing else is required. |
 | "current release train unknown (no application version reported)" | `finopsproperties` returned no `applicationVersion` | Re-run. If it persists, check the environment in PPAC. |
-| "every listed version is on a lower train than 10.0.xx" | The list only had versions older than the live build | Expected. Nothing to apply. |
+| "no Any version available for 10.0.xx" (scope `Any`) | Every offered version is on a lower train than the live build | Expected. A lower train is never applied. |
 | Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v2.4.4. |
 | "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v2.4.3. |
 | "requires PowerShell 7.2" | Running under Windows PowerShell 5.1 | v3 requires PowerShell 7.2 or later. The pipelines use it already; locally, run with `pwsh`. |
 | **Held for production** for a version | No non-production environment in scope runs it yet | Expected (`productionRing = true`). It is applied once non-production has it. Set `productionRing = false` to update everything at once. |
 | `Stale` in an Apply stage | The available version changed, or the F&O version is no longer offered, between Plan and Apply | Expected. The next run plans again. |
 | `TimedOut` for an app install | The install is still running after `waitForInstallsMinutes` | Not a failure. The next run sees the result. Increase `waitForInstallsMinutes` if you want to wait longer. |
-| Run is orange (SucceededWithIssues) | Something could not be read or an install failed | See **Needs attention** in the summary. Set `failOnIssues = true` to fail the run instead. |
+| Run is orange (SucceededWithIssues) | Something could not be read or an install failed | See **Needs attention** in the summary. Set `failOnIssues = true` to fail the Apply stages instead (the Plan stage is never failed for this). |
+| An action shows `Stopped` in an Apply stage | The settings changed after the plan was made (for example `environmentExclude`, `appExclude` or `finOpsApplyVersion`) | Expected: Apply always honours the current settings. |
 | "Could not get an Azure DevOps OIDC token" | Federated pipeline: wrong `serviceConnectionId`, or the pipeline is not authorized for the service connection | Check section 9, steps 4 and 5. |
 | `AADSTS70021: No matching federated identity record` | The federated credential's issuer or subject does not match | Copy them again from the service connection (section 9, step 2). |
 | A warning names `updateFinOpsVersion` or `finOpsInventory` | A retired variable is still in the group | Delete it. It has no effect either way. |

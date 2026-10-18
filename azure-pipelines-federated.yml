@@ -11,8 +11,8 @@
 #      identity federation, manual) for the app registration.
 #   2. Put its name in serviceConnection below.
 #   3. Add variable serviceConnectionId (the connection's ID) to the
-#      variable group. ClientId and TenantId are optional here: the
-#      service connection supplies them.
+#      variable group, next to ClientId and TenantId. The app needs Reader
+#      on the connection's subscription (AzureCLI@2 signs in to it).
 #
 # The PAC CLI fallback (usePacFallback) needs a client secret and is
 # ignored in this pipeline.

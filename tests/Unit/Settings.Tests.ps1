@@ -58,6 +58,17 @@ Describe 'Settings' {
         }
     }
 
+    It 'keeps the safe value for mistyped safety switches' {
+        InModuleScope D365TenantAppUpdater {
+            $s = Get-RunSettings -Bound @{ ProductionRing = 'ture'; WhatIf = 'nope'; FinOpsApplyVersion = 'yes please' }
+            $s.ProductionRing | Should -BeTrue
+            $s.PlanOnly | Should -BeTrue
+            $s.FinOpsApplyVersion | Should -BeFalse
+            $s.Warnings | Should -HaveCount 3
+            (Get-RunSettings -Bound @{ ProductionRing = 'OFF' }).ProductionRing | Should -BeFalse
+        }
+    }
+
     It 'splits lists on commas and trims entries' {
         InModuleScope D365TenantAppUpdater {
             (Get-RunSettings -Bound @{ EnvironmentExclude = ' A, B ,C,' }).EnvironmentExclude | Should -Be @('A', 'B', 'C')

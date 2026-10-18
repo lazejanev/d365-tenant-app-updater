@@ -1,6 +1,6 @@
 @{
-    # The single source of the version number. The run log, the report, the
-    # README badge check in CI and the release workflow all read it from here.
+    # The single source of the version number. The run log and the report
+    # read it from here, and the release workflow checks the tag against it.
     ModuleVersion     = '3.0.0'
     GUID              = '6b2f3d1e-8a4c-4e57-9a0d-2c7e5b9f4a13'
     RootModule        = 'D365TenantAppUpdater.psm1'

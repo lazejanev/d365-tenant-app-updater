@@ -107,6 +107,33 @@ Describe 'Production ring for apps' {
     }
 }
 
+Describe 'Production ring safety defaults' {
+    BeforeEach {
+        Reset-TestModuleState
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { Invoke-FakeRequest @PesterBoundParameters }
+    }
+
+    It 'keeps the ring on, with a warning, when productionRing is mistyped' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'prod' -Name 'Prod' -Sku 'Production' -Apps @((New-FakeApp 'msdyn_Sales' 'Sales' '2.0.0.0' '1.0.0.0'))),
+            (New-FakeEnv -Id 'uat' -Name 'UAT' -Sku 'Sandbox' -Apps @((New-FakeApp 'msdyn_Sales' 'Sales' '2.0.0.0' '1.0.0.0')))
+        )
+        $r = Invoke-TestRun -Setting @{ ProductionRing = 'ture' }
+        @(Get-InstallCalls | Where-Object { $_ -like '*/environments/prod/*' }) | Should -HaveCount 0
+        @($r.Report.warnings | Where-Object { $_ -match "productionRing value 'ture'" }) | Should -HaveCount 1
+    }
+
+    It 'treats an environment with no reported type as production' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'x' -Name 'Mystery' -Sku '' -Apps @((New-FakeApp 'msdyn_Sales' 'Sales' '2.0.0.0' '1.0.0.0')))
+        )
+        $r = Invoke-TestRun
+        Get-InstallCalls | Should -HaveCount 0
+        ($r.Report.environments | Select-Object -First 1).Ring | Should -Be 'Production'
+        @($r.Report.warnings | Where-Object { $_ -match 'type was not reported' }) | Should -HaveCount 1
+    }
+}
+
 Describe 'Production ring for Finance and Operations' {
     BeforeEach {
         Reset-TestModuleState
@@ -144,6 +171,33 @@ Describe 'Production ring for Finance and Operations' {
         @(Get-ApplyCalls)[0] | Should -BeLike '*/environments/fop/*'
     }
 
+    It 'does not count an empty offered list as proof when the sandbox is not ahead of production' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'fop' -Name 'FO Prod' -Sku 'Production' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedProduction' -FinOpsVersions $script:Offer),
+            (New-FakeEnv -Id 'fos' -Name 'FO Sandbox' -Sku 'Sandbox' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedSandbox' -FinOpsVersions '[]')
+        )
+        $null = Invoke-TestRun -Setting @{ FinOpsApplyVersion = 'true' }
+        Get-ApplyCalls | Should -HaveCount 0
+    }
+
+    It 'does not count a non-production environment it cannot update (LCS) as proof' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'fop' -Name 'FO Prod' -Sku 'Production' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedProduction' -FinOpsVersions $script:Offer),
+            (New-FakeEnv -Id 'lcs' -Name 'LCS Sandbox' -Sku 'Sandbox' -FinOpsBuild '10.0.2790.83' -FinOpsDeployment 'LCSSandbox' -FinOpsVersions '[]')
+        )
+        $null = Invoke-TestRun -Setting @{ FinOpsApplyVersion = 'true' }
+        Get-ApplyCalls | Should -HaveCount 0
+    }
+
+    It 'does not count a sandbox whose version list could not be read' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'fop' -Name 'FO Prod' -Sku 'Production' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedProduction' -FinOpsVersions $script:Offer),
+            (New-FakeEnv -Id 'fos' -Name 'FO Sandbox' -Sku 'Sandbox' -FinOpsBuild '10.0.2645.158' -FinOpsDeployment 'UnifiedSandbox' -VersionsStatus 500)
+        )
+        $null = Invoke-TestRun -Setting @{ FinOpsApplyVersion = 'true' }
+        Get-ApplyCalls | Should -HaveCount 0
+    }
+
     It 'makes an environment production from its F&O deployment type' {
         Set-FakeTenant -Environments @(
             (New-FakeEnv -Id 'fop' -Name 'FO Prod' -Sku 'Sandbox' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedProduction' -FinOpsVersions $script:Offer)
@@ -151,6 +205,6 @@ Describe 'Production ring for Finance and Operations' {
         $r = Invoke-TestRun -Setting @{ FinOpsApplyVersion = 'true' }
         Get-ApplyCalls | Should -HaveCount 0
         ($r.Report.environments | Select-Object -First 1).Ring | Should -Be 'Production'
-        ($r.Report.decisions | Where-Object Phase -eq 'FinOps').Reason | Should -Match 'no non-production F&O environment in scope'
+        ($r.Report.decisions | Where-Object Phase -eq 'FinOps').Reason | Should -Match 'no updatable non-production F&O environment in scope'
     }
 }

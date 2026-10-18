@@ -124,8 +124,44 @@ Describe 'Apply mode' {
         Set-FakeTenant -Environments @((New-FakeEnv -Id 'fos' -Name 'FO Sandbox' -FinOpsBuild '10.0.2645.136' -FinOpsVersions '[{"version":"10.0.48.9","releaseStage":"QualityUpdate"}]'))
         $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir -Setting @{ FinOpsApplyVersion = 'true' }
         $global:FakeTenant.Calls.Clear()
-        $null = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath
+        $null = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ FinOpsApplyVersion = 'true' }
         @(Get-ApplyCalls)[0] | Should -BeLike '*/environments/fos/finopsversions/10.0.48.9/apply*'
+    }
+
+    It 'stops planned actions that the current settings no longer allow' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'fos' -Name 'FO Sandbox' -FinOpsBuild '10.0.2645.136' -FinOpsVersions '[{"version":"10.0.48.9","releaseStage":"QualityUpdate"}]' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))),
+            (New-FakeEnv -Id 'uat' -Name 'UAT' -Apps @((New-FakeApp 'msdyn_b' 'B' '2.0' '1.0'), (New-FakeApp 'msdyn_c' 'C' '2.0' '1.0')))
+        )
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir -Setting @{ FinOpsApplyVersion = 'true' }
+        $global:FakeTenant.Calls.Clear()
+        # Meanwhile an admin turned F&O apply off and excluded UAT.
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ FinOpsApplyVersion = 'false'; EnvironmentExclude = 'UAT' }
+        Get-ApplyCalls | Should -HaveCount 0
+        @(Get-InstallCalls) | Should -HaveCount 1
+        @(Get-InstallCalls)[0] | Should -BeLike '*/environments/fos/applicationPackages/msdyn_a/install*'
+        @($r.Report.results | Where-Object Result -eq 'Stopped') | Should -HaveCount 3
+        ($r.Report.results | Where-Object Phase -eq 'FinOps').Detail | Should -Be 'finOpsApplyVersion is now false'
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'stops unproven production actions when productionRing was turned on after the plan' {
+        New-TwoRingTenant
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir -Setting @{ ProductionRing = 'false' }
+        $global:FakeTenant.Calls.Clear()
+        $r = Invoke-TestRun -Mode Apply -Ring Production -PlanFile $script:PlanPath
+        Get-InstallCalls | Should -HaveCount 0
+        $r.Report.results[0].Result | Should -Be 'Stopped'
+    }
+
+    It 'fails the Plan run and sets no outputs when the plan cannot be written' {
+        Reset-TestModuleState -HostKind AzureDevOps
+        New-TwoRingTenant
+        $blocker = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
+        Set-Content -Path $blocker -Value 'a file, not a folder'
+        $r = Invoke-TestRun -Mode Plan -PlanFile (Join-Path $blocker 'plan.json')
+        $r.ExitCode | Should -Be 1
+        $r.Output | Should -Not -Match 'hasProductionActions'
     }
 
     It 'whatIf in Apply mode re-checks but changes nothing' {

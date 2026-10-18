@@ -139,7 +139,7 @@ jobs:
     name: Apply production
     needs: [plan, apply-nonproduction]
     if: >-
-      always() && needs.plan.result == 'success' &&
+      !cancelled() && needs.plan.result == 'success' &&
       needs.plan.outputs.hasProductionActions == 'true' && inputs.whatIf != 'true' &&
       (needs.apply-nonproduction.result == 'success' || needs.apply-nonproduction.result == 'skipped')
     runs-on: ubuntu-latest

@@ -96,8 +96,8 @@ function Get-OrderedActions {
 function Save-RunPlan {
     param($Plan, [string] $Path)
     $dir = Split-Path -Parent $Path
-    if ($dir -and -not (Test-Path $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
-    $Plan | ConvertTo-Json -Depth 30 | Set-Content -Path $Path -Encoding utf8
+    if ($dir -and -not (Test-Path $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop }
+    $Plan | ConvertTo-Json -Depth 30 | Set-Content -Path $Path -Encoding utf8 -ErrorAction Stop
 }
 
 function Read-RunPlan {

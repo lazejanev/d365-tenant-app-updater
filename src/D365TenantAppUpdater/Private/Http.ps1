@@ -1,6 +1,7 @@
 # One HTTP helper for every call. It never throws: it returns
 # { Status; Text; Json; Transport; Headers } so callers decide what a
-# failure means. 429 and 503 are retried (Retry-After honoured, max 3 tries).
+# failure means. 429 and 503 are retried for GET only (Retry-After honoured,
+# max 3 tries): a POST (install, apply) is never sent twice.
 
 $script:HttpMaxAttempts = 3
 $script:HttpSleep = { param([int] $Seconds) Start-Sleep -Seconds $Seconds }
@@ -32,7 +33,7 @@ function Invoke-Http {
             $text = Get-ErrorText -ErrorRecord $_
         }
 
-        if (-not $transport -and ($status -eq 429 -or $status -eq 503) -and $attempt -lt $script:HttpMaxAttempts) {
+        if (-not $transport -and $Method -eq 'GET' -and ($status -eq 429 -or $status -eq 503) -and $attempt -lt $script:HttpMaxAttempts) {
             $wait = 5 * $attempt
             $ra = $null
             if ($respHeaders -and $respHeaders['Retry-After']) { $ra = [string](@($respHeaders['Retry-After'])[0]) }

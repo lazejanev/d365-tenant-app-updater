@@ -50,7 +50,8 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $r = @(Invoke-ScriptAnalyzer -Path ./src, ./scripts -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          # -Path takes one path, so analyze each folder separately.
+          $r = @(foreach ($p in './src', './scripts') { Invoke-ScriptAnalyzer -Path $p -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 })
           $r | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 220 | Write-Host
           foreach ($i in $r) {
             $level = if ($i.Severity -eq 'Error') { 'error' } else { 'warning' }

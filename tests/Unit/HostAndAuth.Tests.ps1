@@ -110,6 +110,23 @@ Describe 'Sign-in' {
         }
     }
 
+    It 'does not switch to the secret when a later token (one environment) is refused' {
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest {
+            $u = [string]$Uri
+            if ($u -like 'https://token.actions.example/*') { return [pscustomobject]@{ StatusCode = 200; Content = '{"value":"gh-jwt"}'; Headers = @{} } }
+            if ($Body -match 'scope=dv') { return [pscustomobject]@{ StatusCode = 400; Content = '{"error":"invalid_resource","error_description":"AADSTS500011"}'; Headers = @{} } }
+            return [pscustomobject]@{ StatusCode = 200; Content = '{"access_token":"tok","expires_in":3600}'; Headers = @{} }
+        }
+        InModuleScope D365TenantAppUpdater {
+            $env:ACTIONS_ID_TOKEN_REQUEST_URL = 'https://token.actions.example/x'; $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'rt'
+            $s = Get-RunSettings -Bound @{ ClientId = 'c'; TenantId = 't'; ClientSecret = 's' }
+            $null = Initialize-Auth -Settings $s
+            $null = Get-AccessToken -Settings $s -Scope 'bap'
+            { Get-AccessToken -Settings $s -Scope 'dv' } | Should -Throw '*AADSTS500011*'
+            $script:AuthState.Mode | Should -Be 'Federated'
+        }
+    }
+
     It 'does not fall back when authMode = Federated' {
         Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest {
             $u = [string]$Uri
@@ -158,6 +175,16 @@ Describe 'HTTP' {
             $r.Json.ok | Should -BeTrue
             $global:Slept | Should -Be @(7, 7)
         }
+    }
+
+    It 'never retries a POST (an install or apply is never sent twice)' {
+        $global:Attempts = 0
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { $global:Attempts++; [pscustomobject]@{ StatusCode = 503; Content = ''; Headers = @{} } }
+        InModuleScope D365TenantAppUpdater {
+            $r = Invoke-Http -Method 'POST' -Uri 'https://x' -Body '{}'
+            $r.Status | Should -Be 503
+        }
+        $global:Attempts | Should -Be 1
     }
 
     It 'never throws on a transport failure' {

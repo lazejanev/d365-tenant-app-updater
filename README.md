@@ -40,7 +40,7 @@ Non-production environments update as soon as something is available, so you tes
 - **No client secret needed.** OpenID Connect on GitHub, workload identity federation on Azure DevOps (preview). The secret still works, and is the backup.
 - **You see the outcome.** App installs are followed and reported; every run publishes a summary on the run page.
 - **A to Z.** Environments and apps are processed and reported alphabetically.
-- **Tested.** 101 automated tests on every change, no tenant required.
+- **Tested.** 113 automated tests on every change, no tenant required.
 
 Full list: [CHANGELOG.md](CHANGELOG.md).
 
@@ -137,7 +137,7 @@ The most used settings:
 | `finOpsApplyVersion` | `false` | **The only F&O on/off switch.** Changes environments when true. |
 | `finOpsUpdateScope` | `QualityUpdate` | `QualityUpdate` (PQU on the current release), `VersionUpdate` (next release only), `Any`. |
 | `authMode` | `Auto` | `Auto` (federated when available, secret as backup), `Federated`, `ClientSecret`. |
-| `failOnIssues` | `false` | Fail the run when something could not be read or an install failed. |
+| `failOnIssues` | `false` | Fail the Apply stages (not Plan) when something could not be read or an install failed. |
 
 Every setting, the run modes and the GitHub names: [docs/parameters.md](docs/parameters.md).
 
@@ -225,7 +225,7 @@ A run where something could not be read or an install failed ends **with issues*
 | `environmentFilter` | allow-list | Only these environments are processed. Blank means all. |
 | `environmentExclude` | deny-list | Always skipped, even if they match the filter. |
 | `appExclude` | deny-list | Apps always skipped. Exact name or `*` wildcard. Partial matches still work but are deprecated. |
-| `finOpsEnvironmentFilter` | allow-list | Extra restriction for F&O only. |
+| `finOpsEnvironmentFilter` | allow-list | Extra restriction for the F&O phase (inventory and apply). |
 | `finOpsDeploymentTypes` | allow-list | Deployment types eligible for an F&O version apply. |
 
 Worked examples are in [docs/parameters.md](docs/parameters.md).

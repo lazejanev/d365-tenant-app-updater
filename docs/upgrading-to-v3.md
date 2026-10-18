@@ -16,7 +16,7 @@ v3.0.0 is a major version because **production is now held back by default** and
 | Sign-in | Client secret | Client secret, or federated (no secret) | Optional: [federated sign-in](setup-azure-devops.md#federated-sign-in-preview) |
 | GitHub Actions | Not supported | Supported | Optional: [setup-github.md](setup-github.md) |
 | Sync pipeline | Synced `main` | Syncs the **latest GitHub release** by default | Nothing. `syncRef = main` restores v2 behaviour |
-| Run result | Always green unless the script crashed | Orange (SucceededWithIssues) when something could not be read or an install failed | Read **Needs attention** in the summary. `failOnIssues = true` fails the run instead |
+| Run result | Always green unless the script crashed | Orange (SucceededWithIssues) when something could not be read or an install failed | Read **Needs attention** in the summary. `failOnIssues = true` fails the Apply stages instead |
 
 ## Steps
 
