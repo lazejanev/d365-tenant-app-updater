@@ -1,9 +1,10 @@
 # d365-tenant-app-updater
 
-**Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, and report Finance and Operations environment inventory, from a single Azure DevOps pipeline.**
+**Keep every Dynamics 365 first-party app, and Finance and Operations, up to date across an entire tenant, from Azure DevOps or GitHub Actions. Non-production first, production once it is proven.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)
-![Version 2.4.4](https://img.shields.io/badge/version-2.4.4-1e90ff)
+![Version 3.0.0](https://img.shields.io/badge/version-3.0.0-1e90ff)
+[![CI](https://github.com/lazejanev/d365-tenant-app-updater/actions/workflows/ci.yml/badge.svg)](https://github.com/lazejanev/d365-tenant-app-updater/actions/workflows/ci.yml)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-0b3d91)
 ![Community project](https://img.shields.io/badge/status-community%20project-111827)
 
@@ -11,144 +12,134 @@
 ![Power Platform](https://img.shields.io/badge/Power%20Platform-742774?logo=microsoftpowerplatform&logoColor=white)
 ![Dataverse](https://img.shields.io/badge/Dataverse-0067B8?logo=microsoft&logoColor=white)
 ![Azure DevOps](https://img.shields.io/badge/Azure%20DevOps-0078D7?logo=azuredevops&logoColor=white)
-![PowerShell](https://img.shields.io/badge/PowerShell-5391FE?logo=powershell&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)
+![PowerShell 7](https://img.shields.io/badge/PowerShell%207-5391FE?logo=powershell&logoColor=white)
 
-**Contents:** [Goal](#the-goal) | [How it works](#how-it-works) | [Requirements](#requirements-mandatory) | [Configuration](#configuration-model-3-required-everything-else-optional) | [Setup](#setup) | [Finance and Operations](#finance-and-operations) | [Pipelines](#pipelines-in-this-repo) | [Parameters](docs/parameters.md)
+**Contents:** [Goal](#the-goal) | [What's new in v3](#whats-new-in-v3) | [How it works](#how-it-works) | [Production ring](#production-ring) | [Requirements](#requirements) | [Setup](#setup) | [Configuration](#configuration) | [Finance and Operations](#finance-and-operations) | [Pipelines](#pipelines-and-workflows-in-this-repo) | [Parameters](docs/parameters.md)
 
 > **Note**
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
-> **Important: upgrade from v2.4.0, v2.4.1 or v2.4.2**
-> With `finOpsApplyVersion = true` and `finOpsUpdateScope = QualityUpdate`, v2.4.0 and v2.4.1 could move an environment to a **new release train** (for example 10.0.48 to 10.0.49), because they only checked Microsoft's `releaseStage` label. v2.4.2 added a release-train check, but read the train from the F&O Provisioning App Anchor Solution, which Microsoft only updates for LCS-driven updates, so it went stale after the first apply through this pipeline. v2.4.3 reads the train from the **live application build** instead, limits `VersionUpdate` to the next train and released builds, and fixes a parsing bug that reported multi-version lists as "no versions listed". v2.4.4 builds the release map automatically from Microsoft's published PQU schedule on every run, so nothing has to be maintained. Upgrade before running with `finOpsApplyVersion = true`.
+> **Upgrading from v2?** Your variable group keeps working. Production is now held back until non-production runs a version, PowerShell 7.2 is required, and the pipeline has three stages. Read [docs/upgrading-to-v3.md](docs/upgrading-to-v3.md).
 
 ## The goal
 
 If you run Dynamics 365 across more than a couple of environments, you know the ritual. Open the Power Platform Admin Center, pick an environment, open its Dynamics 365 apps, check each one for an update, install, wait, and then repeat for the next environment, and the next. Multiply that by every environment on the tenant and every first-party app, and app maintenance quietly eats hours you never get back.
 
-This project turns that manual chore into a hands-off, repeatable, tenant-wide operation. A service principal authenticates non-interactively, the pipeline discovers every Dataverse environment on the tenant, compares the installed version of each app against the latest available version, and installs the updates that are genuinely newer. It can retry previously failed installs, protect specific environments, skip specific apps, and preview everything without changing a thing.
+This project turns that chore into a hands-off, repeatable, tenant-wide operation. A service principal signs in non-interactively, the run discovers every Dataverse environment on the tenant, compares the installed version of each app with the latest available version, and installs the updates that are genuinely newer. Only apps already installed in an environment are touched; nothing new is ever installed.
 
-It also reports a **Finance and Operations inventory** across the tenant, and can optionally apply F&O application version updates, distinguishing between a quality update on the current release train and a move to a new release train.
+It also reports a **Finance and Operations inventory** across the tenant, and can apply F&O quality updates (PQUs) or move to the next release, with guards that make it impossible to jump further than you asked.
 
-It scales the same whether you have 3 environments or 30, which is exactly where it saves the most time.
+Non-production environments update as soon as something is available, so you test and break fast. Production follows once a non-production environment has run the version.
+
+## What's new in v3
+
+- **Production ring, on by default.** Production only takes what non-production already runs. Everything held back is listed with the reason.
+- **Plan, then apply.** Three stages: Plan (changes nothing), Apply non-production, Apply production. Optional approval on production.
+- **GitHub Actions**, alongside Azure DevOps. Same module, same rules.
+- **No client secret needed.** OpenID Connect on GitHub, workload identity federation on Azure DevOps (preview). The secret still works, and is the backup.
+- **You see the outcome.** App installs are followed and reported; every run publishes a summary on the run page.
+- **A to Z.** Environments and apps are processed and reported alphabetically.
+- **Tested.** 101 automated tests on every change, no tenant required.
+
+Full list: [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
-One PowerShell script, two phases, three tokens.
-
 ```
-Azure DevOps pipeline (azure-pipelines.yml)
+Azure DevOps (azure-pipelines.yml)  or  GitHub Actions (.github/workflows/tenant-app-updater.yml)
         |
         v
-  scripts/Update-TenantApps.ps1
+  scripts/Update-TenantApps.ps1  ->  D365TenantAppUpdater module (src/)
         |
-        |  Acquire tokens (service principal, client credentials):
-        |    - BAP admin token      -> list environments + instanceUrl
-        |    - Power Platform token -> app packages, install, F&O routes
-        |    - Dataverse token      -> installed managed-solution versions
+   ===== PLAN (changes nothing) =====
+        |  Sign in (client secret, or federated: GitHub OIDC / Azure DevOps WIF)
+        |  1. List every environment (BAP admin API), keep Dataverse-linked ones,
+        |     apply environmentFilter / environmentExclude, sort A to Z,
+        |     tag each Production or NonProduction.
+        |  2. Per environment, collect:
+        |       AVAILABLE apps <- /appmanagement/environments/{id}/applicationPackages
+        |       INSTALLED      <- {instanceUrl}/api/data/v9.2/solutions (managed)
+        |       F&O (if installed): live build (finopsproperties), offered
+        |       versions (finopsversions), maintenance window
+        |  3. Decide, per app (A to Z):
+        |       update only when available is strictly newer than installed;
+        |       production only when a non-production environment runs it.
+        |     Per F&O environment: target per finOpsUpdateScope, never a lower
+        |     train, production only when proven.
+        |  -> plan.json, summary.md, report.json
         |
-   ===== PHASE 1 - application updates (always runs) =====
-        |  1. List every environment and keep the Dataverse-linked ones.
-        |  2. Apply environmentFilter (allow-list) and environmentExclude
-        |     (deny-list).
-        |  3. Per environment:
-        |       AVAILABLE  <- /appmanagement/environments/{id}/applicationPackages
-        |       INSTALLED  <- {instanceUrl}/api/data/v9.2/solutions (ismanaged eq true)
-        |     The installed version of an app is the version of its anchor
-        |     managed solution.
-        |  4. Per app: skip if in appExclude; retry if state = InstallFailed;
-        |     otherwise install ONLY when available is strictly newer.
-        |  5. The F&O Provisioning App Anchor Solution is excluded here -
-        |     it always fails with Custom Install Experience, and is
-        |     exclusively owned by Phase 2's dedicated route.
-        |
-   ===== PHASE 2 - Finance and Operations =====
-        |  6. INVENTORY (always runs, read-only, no switch):
-        |       <- /dynamics/environments/{id}/finopsproperties
-        |     Reports the LIVE application version, fetched fresh every run.
-        |  7. VERSION APPLY (finOpsApplyVersion, default OFF - the only
-        |     on/off switch that exists):
-        |       VERSIONS <- /dynamics/environments/{id}/finopsversions
-        |       APPLY    -> POST .../finopsversions/{version}/apply
-        |     finOpsUpdateScope selects WHICH kind of version is eligible,
-        |     using Microsoft's releaseStage AND the environment's current
-        |     release train, read from the LIVE application build
-        |     (10.0.2645.x = 10.0.48). LCS managed environments are
-        |     inventoried but never version-updated.
+   ===== APPLY non-production, then APPLY production =====
+        |  4. Re-check each action against the live tenant, then install
+        |     (POST .../install) or apply (POST .../finopsversions/{v}/apply).
+        |  5. Wait for app installs (waitForInstallsMinutes) and report each one.
         v
-   Updated tenant + F&O inventory
+   Updated tenant + summary on the run page
 ```
 
-**Why installed versions come from Dataverse.** The App Management API tells you which apps exist and the latest **available** version, but it is not a reliable source for what is currently **installed**. The trustworthy source is the app's **managed solution version** inside each environment's Dataverse. That is why the service principal needs an application-user role in every environment.
+**Why installed versions come from Dataverse.** The App Management API tells you which apps exist and the latest **available** version, but it is not a reliable source for what is **installed**. The trustworthy source is the app's managed solution version inside each environment's Dataverse. That is why the service principal needs an application-user role in every environment.
 
-**Why it never downgrades.** An app can legitimately be installed at a version newer than the catalog's advertised version. The script only acts when available is **strictly greater** than installed.
+**Why it never downgrades.** An app can legitimately be installed at a version newer than the catalog's advertised version. The run only acts when available is **strictly greater** than installed.
 
-## Requirements (mandatory)
+## Production ring
 
-- **Azure DevOps** organization and project, with permission to create a pipeline and a variable group.
-- **Entra ID (Azure AD) app registration** (service principal) with a **client secret**.
+| | Non-production | Production |
+|---|---|---|
+| Which environments | Everything else: Sandbox, Developer, Trial, ... | PPAC type Production, anything in `productionEnvironments`, F&O `UnifiedProduction` / `LCSProduction` |
+| Apps | Updated as soon as a newer version is available | Updated when at least one non-production environment already has that version or newer (optionally for `productionSoakDays`) |
+| Finance and Operations | Per `finOpsUpdateScope` | Same, once a non-production F&O environment runs the version |
+| Approval | No | Optional (environment `d365-production`) |
+
+On a nightly schedule this means: non-production updates every night; production updates the night after non-production has run the version. Set `productionRing = false` to update everything at once, as in v2. Details: [docs/parameters.md](docs/parameters.md#production-ring-v3).
+
+## Requirements
+
+- **Azure DevOps** (project, variable group) **or GitHub** (repository with Actions). Microsoft-hosted agents / GitHub-hosted runners are fine.
+- **PowerShell 7.2 or later** (preinstalled on both).
+- **Entra ID app registration** (service principal) with a **client secret or a federated credential**.
 - **Power Platform Administrator** rights, used once to register the service principal as a management application (`New-PowerAppManagementApp`).
 - **Application user with a security role** (for example System Administrator) for the service principal in **each target environment's Dataverse**.
-- A **Windows agent** with **PowerShell 7** (the Microsoft-hosted `windows-latest` image is fine). The Finance and Operations phase requires PowerShell 7 specifically; on 5.1 it is skipped with a clear message and Phase 1 still runs.
-- For the optional PAC CLI fallback only: a .NET SDK compatible with the CLI. The pipeline installs the CLI when the fallback is enabled.
+- Outbound HTTPS to `raw.githubusercontent.com` for Microsoft's PQU schedule (hosted agents have it).
 
 Full permission setup is in [docs/permissions.md](docs/permissions.md). It is the most common reason a fresh tenant fails, so read it before the first run.
 
-## Configuration model: 3 required, everything else optional
+## Setup
 
-- **Only three variables are required:** `ClientId`, `ClientSecret`, `TenantId`.
-- **Every other setting has a built-in default in the script.**
-- To override a default, **add a variable with the matching name** to the `D365-TenantAppUpdater` variable group. If it is absent, the default applies. **No YAML editing is ever required.**
-
-### Mandatory variables
-
-| Variable | Secret | Description |
+| Platform | Guide | Sign-in |
 |---|---|---|
-| `ClientId` | No | Entra ID application (client) id of the service principal. |
-| `ClientSecret` | **Yes** | Client secret value. Always mark it as secret. |
-| `TenantId` | No | Entra ID directory (tenant) id. |
+| Azure DevOps | [docs/setup-azure-devops.md](docs/setup-azure-devops.md) | Client secret (`azure-pipelines.yml`), or workload identity federation (`azure-pipelines-federated.yml`, preview) |
+| GitHub Actions | [docs/setup-github.md](docs/setup-github.md) | OpenID Connect, client secret as backup |
 
-### Optional variables (add only what you want to override)
+In short:
+
+1. Create the Entra ID app registration.
+2. Register it as a Power Platform management application, and add it as an application user in each environment ([permissions](docs/permissions.md)).
+3. Azure DevOps: create the `D365-TenantAppUpdater` variable group (`ClientId`, `ClientSecret`, `TenantId`) and add `azure-pipelines.yml`. GitHub: add the federated credentials and the `D365_CLIENT_ID` / `D365_TENANT_ID` variables.
+4. Run with **Plan only** = `true` and read the summary on the run page.
+5. Run for real. Optionally schedule it.
+
+## Configuration
+
+- **Only sign-in details are required.** Everything else has a built-in default.
+- To change a default, add a variable with the matching name (Azure DevOps variable group) or its UPPER_SNAKE name (GitHub repository variable). No YAML editing.
+
+The most used settings:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `bapApiVersion` | `2026-06-01` | API version for the BAP environments list. |
-| `appManagementApiVersion` | `2026-05-01-preview` | API version for App Management calls. |
-| `finOpsApiVersion` | `2024-10-01` | API version for the Finance and Operations routes. |
-| `bapApiRoot` | `https://api.bap.microsoft.com` | BAP admin API base URL. |
-| `ppApiRoot` | `https://api.powerplatform.com` | Power Platform API base URL. |
-| `powerPlatformScope` | `https://api.powerplatform.com/.default` | Token scope for Power Platform. |
-| `authority` | built from `TenantId` | Token endpoint. |
-| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail. |
-| `dumpSolutionCatalog` | `false` | Dump the full Dataverse managed-solution catalog (separate from `dumpDiagnostics`; can be 150+ lines). |
-| `retryFailedInstalls` | `true` | Retry apps whose previous install failed. |
 | `whatIf` | `false` | Plan only. Report what would change, change nothing. |
-| `usePacFallback` | `false` | Attempt the PAC CLI for custom-install apps. |
-| `environmentFilter` | (blank = all) | Allow-list of environment names/ids. |
-| `environmentExclude` | (blank = none) | Deny-list of environment names/ids. |
-| `appExclude` | (blank) | Deny-list of app names/ids to always skip. |
-| `finOpsApplyVersion` | `false` | **The only Finance and Operations on/off switch.** Changes environments when true. |
-| `finOpsUpdateScope` | `QualityUpdate` | Which kind of version apply may select: `QualityUpdate` (PQU on the current release train), `VersionUpdate` (the next release train, released builds only), or `Any`. |
-| `finOpsTargetVersion` | (blank = highest matching scope) | Specific F&O version to apply. |
-| `finOpsEnvironmentFilter` | (blank = all detected) | Extra allow-list for the F&O apply phase only. |
-| `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a version apply. |
-| `finOpsScheduleUrl` | Microsoft's published PQU schedule | Where the release map is read from on every run. `none` disables the download (built-in map only). You never need to set this. |
-| `finOpsBuildTrainMap` | (blank) | Emergency override only, e.g. `10.0.2900=50`. Not needed in normal use: the release map is read from Microsoft's schedule automatically. |
+| `productionRing` | `true` | Production only takes versions non-production already runs. |
+| `productionEnvironments` | (blank) | Extra environments to treat as production (names or ids). |
+| `productionSoakDays` | `0` | Apps: how long non-production must run a version before production gets it. |
+| `environmentFilter` / `environmentExclude` | (all) / (none) | Which environments are in scope. |
+| `appExclude` | (blank) | Apps to always skip (exact names or `*` wildcards). |
+| `waitForInstallsMinutes` | `30` | How long to follow app installs. `0` = do not wait. |
+| `finOpsApplyVersion` | `false` | **The only F&O on/off switch.** Changes environments when true. |
+| `finOpsUpdateScope` | `QualityUpdate` | `QualityUpdate` (PQU on the current release), `VersionUpdate` (next release only), `Any`. |
+| `authMode` | `Auto` | `Auto` (federated when available, secret as backup), `Federated`, `ClientSecret`. |
+| `failOnIssues` | `false` | Fail the run when something could not be read or an install failed. |
 
-`whatIf`, `usePacFallback`, `finOpsApplyVersion`, `finOpsUpdateScope` and `finOpsTargetVersion` are also exposed as **runtime parameters**, so you can override them for a single manual run.
-
-> Inventory always runs and is read-only; there is no variable for it. Two earlier variable names, `finOpsInventory` and `updateFinOpsVersion`, are retired. If either is still present the script ignores it and logs a one-time warning. See [docs/parameters.md](docs/parameters.md) for details.
-
-Full details and worked examples are in [docs/parameters.md](docs/parameters.md).
-
-## Setup
-
-Full walkthrough is in [docs/setup.md](docs/setup.md). In short:
-
-1. Create the Entra ID app registration and a client secret.
-2. Register the service principal as a Power Platform management application, and add it as an application user (System Administrator) in each target environment. See [docs/permissions.md](docs/permissions.md).
-3. Create the `D365-TenantAppUpdater` variable group with the three required variables.
-4. Add the pipeline from `azure-pipelines.yml` and authorize it to use the variable group.
-5. Run with `whatIf` set to `true` first to preview, then run for real.
+Every setting, the run modes and the GitHub names: [docs/parameters.md](docs/parameters.md).
 
 ## Finance and Operations
 
@@ -156,15 +147,15 @@ Two variables govern this phase: `finOpsApplyVersion` (the only on/off switch, d
 
 ### Inventory (always on, read-only)
 
-For every detected F&O environment the pipeline reports a single compact line, for example:
+For every detected F&O environment the run summary has one row: live application build and its release train (for example `10.0.2645.136` = `10.0.48`), platform, deployment type, maintenance window, and the versions Microsoft offers. The log has one line per environment, for example:
 
 ```
-Dev04: 10.0.2645.136 [10.0.48] (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
+Dev04 [NonProduction]: 10.0.2645.136 [10.0.48] - no PQU version available for 10.0.48. Offered: 10.0.49.3 [QualityUpdate]
 ```
 
-> Environment names above (`Dev01`, `Dev02`, ...) are illustrative placeholders. Your own log will show your actual environment display names.
+> Environment names above (`Dev01`, `Dev02`, ...) are illustrative placeholders.
 
-The `[10.0.48]` is the release train of the live build. Expand the environment's group to see AOS counts, demo dataset, and which build prefix the train came from. This runs every time, regardless of `finOpsApplyVersion`.
+This runs every time, regardless of `finOpsApplyVersion`.
 
 ### Update scope: PQU vs. a new release train
 
@@ -193,13 +184,11 @@ From the environment's **live application build**, the `applicationVersion` that
 
 **Never a lower train (every scope).** A version on a lower train than the live build is never applied, even with `Any` or an explicit `finOpsTargetVersion`. Microsoft also documents that the version list only offers versions later than the installed one.
 
-**Why not the F&O Provisioning App Anchor Solution.** Microsoft has confirmed that the Anchor Solution's version in Dataverse is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API that this pipeline uses. After the first apply it is permanently stale. v2.4.2 read the train from it; v2.4.3 uses it only to detect that F&O is installed, never its version.
+**Why not the F&O Provisioning App Anchor Solution.** Microsoft has confirmed that the Anchor Solution's version in Dataverse is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API that this pipeline uses. After the first apply it is permanently stale. It is used only to detect that F&O is installed, never its version.
+
+**Production F&O environments follow the production ring**: a sandbox has to run a version (be on a later train, or no longer be offered it) before production gets it.
 
 To move more than one release train in a single run, set `finOpsUpdateScope = Any` **and** an explicit `finOpsTargetVersion`, so the jump is a deliberate choice.
-
-### Why apply is a single, off-by-default switch
-
-Version apply is implemented and gated behind a live route check, so it begins working automatically when the `finopsversions` route becomes available on your endpoint. That is exactly why it needs to be one explicit, off-by-default variable with nothing else able to enable it: if it were bundled with inventory, or reachable through more than one variable name, the day the route deploys, anyone who had only enabled the phase for the inventory table would silently start applying application versions on their next scheduled run.
 
 ### LCS managed environments are never version-updated
 
@@ -207,66 +196,56 @@ Version apply is implemented and gated behind a live route check, so it begins w
 
 ### A known platform behaviour worth expecting
 
-The `finopsversions` route has been observed to intermittently return HTTP 404 `RouteNotFound` on one run and a genuine HTTP 200 with real data on another, for the identical environment, token, and api-version, with no configuration change in between. This is reported factually per environment and is **not** counted as a script failure. If you see it, simply re-run.
+The `finopsversions` route has been observed to intermittently return HTTP 404 `RouteNotFound` on one run and a genuine HTTP 200 with real data on another, for the identical environment, token, and api-version, with no configuration change in between. This is reported per environment and is **not** counted as a failure. If you see it, simply re-run.
 
-## How to run
+## Pipelines and workflows in this repo
 
-- **Manual:** run the pipeline and, if you like, flip the runtime parameters for that run.
-- **First run:** set `whatIf` to `true` so it reports without changing anything.
-- **Scheduled:** uncomment the `schedules` block in `azure-pipelines.yml`. Decide deliberately whether `finOpsApplyVersion` should be on, and whether `finOpsUpdateScope` should stay at `QualityUpdate` or widen to `VersionUpdate`, for an unattended run.
+| File | Platform | What it does |
+|---|---|---|
+| `azure-pipelines.yml` | Azure DevOps | The updater, client-secret sign-in. Plan, Apply non-production, Apply production. |
+| `azure-pipelines-federated.yml` | Azure DevOps | The same, with workload identity federation (preview). |
+| `pipelines/templates/*.yml` | Azure DevOps | Stages and steps shared by both. |
+| `sync-from-github.yml` | Azure DevOps | Optional. Keeps an Azure DevOps copy in step with the **latest GitHub release** (or `main`). Weekly, Mondays 06:00 UTC. Needs Contribute (and Force push for `reset`) for the build service on the repository, per project. |
+| `.github/workflows/tenant-app-updater.yml` | GitHub | The updater: plan, apply-nonproduction, apply-production. |
+| `.github/workflows/ci.yml` | GitHub | Tests, PSScriptAnalyzer and YAML checks on every pull request. |
+| `.github/workflows/release.yml` | GitHub | Publishes a GitHub release when a version tag is pushed. |
 
-## Pipelines in this repo
+### What each run produces
 
-### 1. `azure-pipelines.yml` - the tenant app updater
+- **summary.md**, shown on the run page (Azure DevOps Extensions tab, GitHub job summary): planned actions or results, **Held for production**, **Needs attention**, all environments A to Z, and the F&O table.
+- **plan.json** and **report.json**, published as run artifacts.
+- The log, with one section per environment in the same order.
 
-The main pipeline. Runs `scripts/Update-TenantApps.ps1` to update Dynamics 365 first-party apps across every Dataverse environment, report F&O inventory, and optionally apply F&O versions.
-
-### 2. `sync-from-github.yml` - GitHub to Azure DevOps sync
-
-Optional. Keeps an Azure DevOps mirror of this repository in step with GitHub, so teams that build from Azure DevOps Repos never work from a stale copy.
-
-- Runs on a schedule only. Default cron is weekly, Mondays at 06:00 UTC, with `always: true`.
-- Fetches `main` plus tags from the GitHub remote.
-- Sync strategy: `reset` (mirror, force-resets the branch) or `ff-only` (safe, fails if histories diverged).
-- Pushes using `System.AccessToken`.
-
-One-time Azure DevOps setup, **per project** (repository permissions do not carry across projects):
-
-- **Project Settings > Repositories > (repo) > Security:** grant the build service **Contribute**. For the default `reset` strategy also grant **Force push**.
-- If `main` has a branch policy, add the build service as an exception.
+A run where something could not be read or an install failed ends **with issues** (orange on Azure DevOps, warning annotations on GitHub), so a missing application user in one environment never hides behind a green tick. Sign-in or discovery failures fail the run.
 
 ## Environment and app scoping
 
 | Control | Type | Effect |
 |---|---|---|
 | `environmentFilter` | allow-list | Only these environments are processed. Blank means all. |
-| `environmentExclude` | deny-list | Always skipped, even if they match the filter. Use it to protect production. |
-| `appExclude` | deny-list | Apps always skipped. Matches exact, wildcard, or substring. |
-| `finOpsEnvironmentFilter` | allow-list | Extra restriction applied to F&O version apply only, not inventory. |
+| `environmentExclude` | deny-list | Always skipped, even if they match the filter. |
+| `appExclude` | deny-list | Apps always skipped. Exact name or `*` wildcard. Partial matches still work but are deprecated. |
+| `finOpsEnvironmentFilter` | allow-list | Extra restriction for F&O only. |
 | `finOpsDeploymentTypes` | allow-list | Deployment types eligible for an F&O version apply. |
-
-> `appExclude` falls back to **substring** matching when the value contains no `*`. A short value like `sales` will match far more than you expect. Prefer the exact unique name, or an explicit wildcard. See [docs/parameters.md](docs/parameters.md).
 
 Worked examples are in [docs/parameters.md](docs/parameters.md).
 
 ## Custom Install Experience apps
 
-Some first-party apps use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The script detects the API's "Custom Install Experience" response and reports those apps as **manual install required** in a summary table rather than failing the run. Add them to `appExclude` if you prefer to silence them entirely. The F&O Provisioning App Anchor Solution is a special case of this and is excluded from Phase 1 entirely, since it is exclusively handled by the Finance and Operations phase.
+Some first-party apps use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The run detects the API's "Custom Install Experience" response and reports those apps as **needs the admin center install wizard** rather than failing. Add them to `appExclude` to silence them. The F&O Provisioning App is never sent to the apps phase; it is handled by the Finance and Operations phase.
 
-## Known limitations and roadmap
+## Known limitations
 
-- Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions.
+- Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions, and never installs an app that is not already installed.
 - Available versions depend on what the tenant's release channel exposes.
-- The `finopsversions` route has observed intermittent availability. See above.
-- The current F&O release train comes from Microsoft's published PQU schedule, downloaded on every run. The agent needs outbound HTTPS to `raw.githubusercontent.com` (Microsoft-hosted agents have it). If the schedule is unreachable, the built-in map (10.0.46 to 10.0.49) is used and newer releases are skipped, not guessed.
-- Tokens are refreshed after 45 minutes, so long runs across many environments keep working within the 180-minute job timeout.
+- F&O version applies run for hours; the run triggers them and the next run verifies them.
+- `finopsversions` has shown intermittent `RouteNotFound` responses. See above.
 - LCS managed environments are inventoried only, by design.
-- Install operations are triggered but not polled to completion. The run reports the operation id and moves on.
-- Roadmap ideas: install completion polling, per-environment approval gates, Teams or email summary notification, parallel installs, and a dry-run report artifact.
+- `azure-pipelines-federated.yml` is preview until confirmed in more organizations.
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md): the module layout, how to run the tests, and the invariants that keep this safe.
 
 ## License
 

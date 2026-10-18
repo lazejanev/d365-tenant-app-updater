@@ -8,11 +8,44 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Planned
 
-- Install completion polling against the operation status route, once that route is confirmed against a live endpoint.
-- Per-environment approval gates before install.
 - Teams or email summary notification after each run.
 - Parallel installs across environments.
-- Dry-run report published as a pipeline artifact.
+- Remove partial (substring) `appExclude` matching (deprecated in 3.0.0).
+
+## [3.0.0] - 2026-10-18
+
+Major version: production is held back by default, and the run is split into Plan and Apply. Every v2 setting keeps its name and meaning, so existing variable groups keep working. See [docs/upgrading-to-v3.md](docs/upgrading-to-v3.md).
+
+### Added
+
+- **Production ring, on by default** (`productionRing`). A production environment only takes a version that a non-production environment in scope already runs: apps by installed solution version, F&O by live release train and offered list. Production is PPAC type Production (`productionEnvironmentTypes`), environments named in `productionEnvironments`, and F&O deployment types `UnifiedProduction` / `LCSProduction`. Optional `productionSoakDays` for apps. Held items are listed with the reason.
+- **Plan and Apply.** `-Mode Plan` writes `plan.json` and changes nothing; `-Mode Apply -Ring NonProduction|Production` applies a plan after re-checking every action against the live tenant (`Stale` and `AlreadyDone` are reported, never improvised). `-Mode PlanAndApply` (default) keeps the v2 single-run behaviour.
+- **Azure DevOps pipeline with three stages**: Plan, Apply non-production, Apply production (a deployment to the `d365-production` environment, where an Approvals check can be added). Shared templates in `pipelines/templates/`.
+- **GitHub Actions support**: `.github/workflows/tenant-app-updater.yml` with the same three jobs, OpenID Connect sign-in, and the `d365-production` environment for optional required reviewers. Setup: [docs/setup-github.md](docs/setup-github.md).
+- **Federated sign-in, no secret**: GitHub OIDC, and Azure DevOps workload identity federation through `azure-pipelines-federated.yml` (preview). `authMode` (`Auto`, `Federated`, `ClientSecret`): in `Auto` a refused federated sign-in falls back to the client secret with a warning.
+- **Waits for app installs** (`waitForInstallsMinutes`, default 30) and reports each one as Succeeded, Failed or TimedOut.
+- **Run summary on the run page** (Azure DevOps Extensions tab, GitHub job summary) and `report.json`, published as artifacts with `plan.json`.
+- **A to Z everywhere**: environments and apps are processed and listed alphabetically, ignoring case; non-production is applied before production.
+- F&O inventory shows each environment's **maintenance window** (`finopsadminsettings`).
+- `failOnIssues`: fail the run (exit code 1) instead of finishing with issues.
+- **Tests and CI**: Pester suite (101 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
+
+### Changed
+
+- The 1,456-line script is now the `D365TenantAppUpdater` module (`src/`); `scripts/Update-TenantApps.ps1` is a thin entry point with the same parameters. `ModuleVersion` in the manifest is the single source of the version.
+- **PowerShell 7.2 or later is required** for the whole run (v2 ran the apps phase on 5.1).
+- Tokens are cached per API and renewed five minutes before they expire (v2: refreshed after 45 minutes).
+- 429 and 503 responses are retried (up to three attempts, honouring `Retry-After`).
+- A run where something could not be read or an install failed ends as SucceededWithIssues (orange on Azure DevOps) instead of green.
+- `sync-from-github.yml` syncs the latest GitHub release by default (`syncRef = main` for the previous behaviour).
+
+### Deprecated
+
+- `appExclude` values that only match part of an app name. They still work and are reported once per run with the wildcard to use instead.
+
+### Unchanged
+
+- All Finance and Operations rules from 2.4.4: inventory always, apply only with `finOpsApplyVersion = true`, release train from the live build through Microsoft's PQU schedule, never a lower train, never the Anchor Solution.
 
 ## [2.4.4] - 2026-10-18
 

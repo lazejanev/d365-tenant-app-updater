@@ -1,14 +1,17 @@
 # Parameters and variables
 
-The configuration model is simple: **three variables are required, everything else is optional with a built-in default.** To override a default, add a variable with the matching name to the `D365-TenantAppUpdater` variable group. If the variable is absent, the script uses its default. You never edit the YAML to change behavior.
+The configuration model is simple: **sign-in details are required, everything else is optional with a built-in default.** To override a default, add a variable with the matching name: on Azure DevOps to the `D365-TenantAppUpdater` variable group, on GitHub as a repository variable (names in [GitHub variable names](#github-variable-names)). If the variable is absent, the default applies. You never edit the YAML to change behavior.
+
+Every setting keeps its v2 name and meaning, so an existing variable group keeps working after the upgrade to v3. New settings in v3 are marked **(v3)**.
 
 ## How resolution works
 
 For each optional setting the script resolves the value in this order:
 
 1. An explicit script parameter (used when running the script by hand).
-2. The matching environment variable (how the pipeline passes overrides from the variable group).
-3. The built-in default.
+2. A queue-time override (only the five runtime parameters, see below).
+3. The matching environment variable (how the pipeline passes the variable group or repository variables).
+4. The built-in default.
 
 An unexpanded Azure DevOps macro (for example `$(bapApiVersion)`, which is what you get when a variable is not defined in the group) is treated as "not set", so the default applies. Placeholder text like `(empty)`, `(none)` or `(all)` is also treated as blank.
 
@@ -16,11 +19,20 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 
 ## Required variables
 
-| Variable | Secret | Description |
+| Azure DevOps | GitHub | Secret | Description |
+|---|---|---|---|
+| `ClientId` | `D365_CLIENT_ID` (variable) | No | Entra ID application (client) id of the service principal. Optional in `azure-pipelines-federated.yml`, where the service connection supplies it. |
+| `ClientSecret` | `D365_CLIENT_SECRET` (secret) | **Yes** | Client secret value. Required in `azure-pipelines.yml`. Optional on GitHub, where OpenID Connect is used and the secret is only the backup. Not used by `azure-pipelines-federated.yml`. |
+| `TenantId` | `D365_TENANT_ID` (variable) | No | Entra ID directory (tenant) id. |
+
+## Sign-in (v3)
+
+| Variable | Default | Description |
 |---|---|---|
-| `ClientId` | No | Entra ID application (client) id of the service principal. |
-| `ClientSecret` | **Yes** | Client secret value. Always mark as secret. |
-| `TenantId` | No | Entra ID directory (tenant) id. |
+| `authMode` | `Auto` | `Auto`: OpenID Connect (federated, no secret) when the platform offers it, otherwise the client secret. If the federated sign-in is refused and a secret exists, the run switches to the secret and warns. `Federated`: OIDC only, never the secret. `ClientSecret`: the secret only. |
+| `serviceConnectionId` | (blank) | Azure DevOps federated pipeline only: the ID of the workload identity federation service connection, used to request the pipeline's OIDC token. See [setup-azure-devops.md](setup-azure-devops.md#federated-sign-in-preview). |
+
+Tokens are cached per API and renewed five minutes before they expire, so long runs keep working.
 
 ## Optional variables and their defaults
 
@@ -43,11 +55,33 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 | `dumpDiagnostics` | `true` | Print per-environment diagnostic detail (installed-vs-available diffs, F&O AOS/demo detail, current release train and the build prefix it came from). |
 | `dumpSolutionCatalog` | `false` | Dump every Dataverse managed solution matching a broad generic-app hint list. Separate from `dumpDiagnostics` because on a Sales-heavy environment this alone can run to 150+ lines unrelated to F&O. |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install ended in `InstallFailed`. |
-| `whatIf` | `false` | Plan only. Report what would change without changing anything. |
-| `usePacFallback` | `false` | Attempt a PAC CLI install for custom-install apps. |
+| `whatIf` | `false` | Plan only. Report what would change without changing anything. In the default PlanAndApply mode, `whatIf = true` makes the run a Plan run. |
+| `usePacFallback` | `false` | Attempt a PAC CLI install for custom-install apps. Needs the client secret: ignored (with a warning) when signing in with OIDC, and not installed on GitHub runners. |
 | `environmentFilter` | (blank = all) | Allow-list of environment names/ids to process. |
 | `environmentExclude` | (blank = none) | Deny-list of environment names/ids to always skip. |
-| `appExclude` | (blank) | Deny-list of app names/ids to always skip. |
+| `appExclude` | (blank) | Deny-list of app names/ids to always skip. Exact names or `*` wildcards. Partial (substring) matches still work but are deprecated, see [App scoping](#app-scoping-appexclude). |
+| `waitForInstallsMinutes` **(v3)** | `30` | After triggering app installs, wait up to this many minutes for them to finish and report each outcome (succeeded, failed, still running). `0` = do not wait, as in v2. F&O version applies run for hours and are verified by the next run. |
+| `failOnIssues` **(v3)** | `false` | When something could not be read or an install failed, the run ends "with issues": orange on Azure DevOps, green with warning annotations on GitHub. Set `true` to fail the run (exit code 1) instead, for example to trigger a notification. |
+
+### Production ring (v3)
+
+With the ring on, a production environment only takes a version that a non-production environment in scope **already runs**. Non-production environments update first ("test and break fast"); production follows on a later run, once the version is proven.
+
+| Variable | Default | Description |
+|---|---|---|
+| `productionRing` | `true` | `false` restores v2 behaviour: every environment updates as soon as a version is available. |
+| `productionEnvironmentTypes` | `Production` | PPAC environment types treated as production. Other types (Sandbox, Developer, Trial, Default) are non-production. |
+| `productionEnvironments` | (blank) | Extra environment names or ids treated as production, whatever their type (for example a Sandbox used for training). |
+| `productionSoakDays` | `0` | Apps only: a non-production environment proves a version only after running it this many days (from the solution's modified date in Dataverse). `0` = proven as soon as it is installed. |
+
+How "proven" is decided:
+
+- **Apps.** At least one non-production environment in scope has the app's managed solution at the target version or newer (and, with `productionSoakDays`, has not changed it for that many days).
+- **Finance and Operations.** At least one non-production F&O environment in scope is on a higher release train than the target, or on the same train and the target is no longer in its offered list. Microsoft only offers versions later than the installed one, so a version that is no longer offered is installed (or superseded).
+- An F&O environment whose deployment type is `UnifiedProduction` or `LCSProduction` is production, whatever its PPAC type.
+- Production actions in a plan were proven when the plan was made. In the three-stage pipelines, production therefore takes what non-production already ran **before** this run: one run behind.
+
+Held items appear under **Held for production** in the run summary, with the reason, so nothing is silently skipped.
 
 ### Finance and Operations
 
@@ -116,6 +150,21 @@ Version apply is implemented against the documented Power Platform API and is ga
 
 Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional, so a switch for it made no sense) and `updateFinOpsVersion` (an earlier combined switch, superseded by `finOpsApplyVersion`). If either is still present in the variable group, the script ignores it and prints a one-time warning naming exactly which one it found. Remove them; nothing needs to replace them.
 
+## Run modes (v3)
+
+`scripts/Update-TenantApps.ps1` takes three run parameters. The pipelines set them; you only need them to run by hand.
+
+| Parameter | Values | Effect |
+|---|---|---|
+| `-Mode` | `PlanAndApply` (default), `Plan`, `Apply` | `Plan` reads the tenant and writes `plan.json`, `summary.md` and `report.json`, changing nothing. `Apply` reads a `plan.json`, re-checks every action against the live tenant and applies it. `PlanAndApply` does both in one run (v2 behaviour). |
+| `-Ring` | `All` (default), `NonProduction`, `Production` | Which actions an apply executes. |
+| `-PlanFile` | path | The plan to apply. Default: `plan.json` in the output directory. |
+| `-OutputDirectory` | path | Where the plan and reports go. Default: the pipeline's artifact staging directory (Azure DevOps), `RUNNER_TEMP` (GitHub), or `./d365-tenant-app-updater-output`. |
+
+Apply never improvises. An action is skipped and reported (`Stale`) when the app's available version changed since the plan, or an F&O version is no longer offered; `AlreadyDone` when the environment already has it. The next plan decides again.
+
+Every run writes **summary.md** (shown on the run page: the Extensions tab on Azure DevOps, the job summary on GitHub) and **report.json**. Environments and apps are processed and listed A to Z, ignoring case; within an apply, non-production goes before production.
+
 ## Runtime parameters
 
 Five settings are also exposed as queue-time inputs, so you can override them for a single manual run without editing the variable group:
@@ -123,7 +172,7 @@ Five settings are also exposed as queue-time inputs, so you can override them fo
 | Parameter | Values | Effect |
 |---|---|---|
 | Plan only (`whatIf`) | `useLibraryOrDefault`, `true`, `false` | Overrides the library/default for this run. |
-| Try PAC CLI fallback (`usePacFallback`) | `useLibraryOrDefault`, `true`, `false` | Same override behavior. When effectively true, the pipeline installs the PAC CLI on the agent. |
+| Try PAC CLI fallback (`usePacFallback`) | `useLibraryOrDefault`, `true`, `false` | Same override behavior. When effectively true, the pipeline installs the PAC CLI on the agent. Azure DevOps client-secret pipeline only. |
 | Apply F&O version (`finOpsApplyVersion`) | `useLibraryOrDefault`, `true`, `false` | **Changes environments.** Enables version apply for this run only. |
 | F&O update scope (`finOpsUpdateScope`) | `useLibraryOrDefault`, `QualityUpdate`, `VersionUpdate`, `Any` | Overrides which kind of version is selected, for this run only. |
 | F&O target version (`finOpsTargetVersion`) | free text | A specific version for this run. Blank defers to the library value or highest matching scope. |
@@ -169,10 +218,10 @@ Matching is tried in this order:
 
 1. **Exact** - `msdyn_AppProfileManagerAnchor` matches only that app.
 2. **Wildcard** - `msdyn_*Anchor` matches anything fitting the pattern. Use this when you want control.
-3. **Substring** - any app whose name *contains* the value is matched.
+3. **Substring (deprecated)** - any app whose name *contains* the value is matched.
 
-> **Substring matching is deliberately loose, and it is the fallback whenever the value contains no `*`.**
-> A long, specific value like `FinanceAndOperationsProvisioning` is safe. A short generic value is not: `sales` would exclude every app with "sales" anywhere in its unique name, localized name, application name or id, which is likely far more than you intended. When in doubt, use the exact unique name, or an explicit wildcard so the intent is visible.
+> **Substring matching is deprecated in v3.** It still works, so nothing changes for existing variable groups, but each value that only matches as part of a name is reported once per run as a warning, naming the app it matched and the wildcard to use instead. It will be removed in a future major version.
+> A short generic value is risky: `sales` would exclude every app with "sales" anywhere in its unique name, localized name, application name or id. Use the exact unique name, or an explicit wildcard such as `*sales*` so the intent is visible.
 
 The default is blank. Apps that require the Power Platform Admin Center install wizard are reported under **manual install required** rather than hidden, so you can see what still needs a human. Add them to `appExclude` if you would rather silence them. The F&O Provisioning App Anchor Solution never needs to be added here: it is excluded from the generic install loop entirely, because it is exclusively updated through the dedicated Finance and Operations route.
 
@@ -205,7 +254,7 @@ Variable group:
 - `whatIf = true`
 - `environmentExclude = Production`
 
-This reports what would change across every environment except Production, without changing anything. F&O inventory is included, because it always runs and is read-only.
+This reports what would change across every environment except Production, without changing anything. (Since v3 the production ring already holds production back until non-production runs a version; excluding production is only needed if you never want the pipeline to touch it.) F&O inventory is included, because it always runs and is read-only.
 
 ## Example: inventory everywhere, no version changes
 
@@ -238,3 +287,31 @@ Use this once you have decided you want to move an environment onto a new releas
 `Any` lifts the train and stage restrictions, and the explicit target makes the jump a deliberate choice for the named environment. The lower-train guard still applies.
 
 Run any apply configuration with `whatIf = true` first.
+
+## GitHub variable names
+
+On GitHub, settings are repository variables (**Settings > Secrets and variables > Actions > Variables**). The workflow maps them to the setting names:
+
+| Setting | GitHub repository variable |
+|---|---|
+| ClientId / TenantId | `D365_CLIENT_ID`, `D365_TENANT_ID` |
+| ClientSecret (optional backup) | secret `D365_CLIENT_SECRET` |
+| authMode | `AUTH_MODE` |
+| whatIf | `WHAT_IF` |
+| environmentFilter / environmentExclude | `ENVIRONMENT_FILTER`, `ENVIRONMENT_EXCLUDE` |
+| appExclude | `APP_EXCLUDE` |
+| retryFailedInstalls | `RETRY_FAILED_INSTALLS` |
+| dumpDiagnostics / dumpSolutionCatalog | `DUMP_DIAGNOSTICS`, `DUMP_SOLUTION_CATALOG` |
+| finOpsApplyVersion | `FINOPS_APPLY_VERSION` |
+| finOpsUpdateScope | `FINOPS_UPDATE_SCOPE` |
+| finOpsTargetVersion | `FINOPS_TARGET_VERSION` |
+| finOpsEnvironmentFilter | `FINOPS_ENVIRONMENT_FILTER` |
+| finOpsDeploymentTypes | `FINOPS_DEPLOYMENT_TYPES` |
+| finOpsScheduleUrl / finOpsBuildTrainMap | `FINOPS_SCHEDULE_URL`, `FINOPS_BUILD_TRAIN_MAP` |
+| productionRing | `PRODUCTION_RING` |
+| productionEnvironmentTypes / productionEnvironments | `PRODUCTION_ENVIRONMENT_TYPES`, `PRODUCTION_ENVIRONMENTS` |
+| productionSoakDays | `PRODUCTION_SOAK_DAYS` |
+| waitForInstallsMinutes | `WAIT_FOR_INSTALLS_MINUTES` |
+| failOnIssues | `FAIL_ON_ISSUES` |
+
+The endpoint and API-version settings are not mapped in the workflow; their defaults are correct. Add a line under `env:` in `.github/workflows/tenant-app-updater.yml` if you ever need one.

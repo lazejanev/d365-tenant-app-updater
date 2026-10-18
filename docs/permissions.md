@@ -4,16 +4,18 @@ This is the most important document in the repository. On a fresh tenant, the pi
 
 ## The three layers you must satisfy
 
-1. **Entra ID app registration with a valid secret.** (Authentication)
+1. **Entra ID app registration with a valid secret or federated credential.** (Authentication)
 2. **Registration as a Power Platform management application.** (Tenant-level admin authorization - lets the service principal list environments via the BAP admin API and call the Power Platform APIs.)
 3. **Application user with a security role in each target environment.** (Environment-level authorization - lets the service principal read managed-solution versions from Dataverse and install apps.)
 
 Miss any one and the run fails at a predictable point.
 
-## 1. App registration and secret
+## 1. App registration: secret or federated credential
 
-- Create the app registration and a client secret (see [setup.md](setup.md)).
-- Confirm the secret is not expired. An expired or missing secret produces `AADSTS7000218` or `invalid_client` at token time.
+- Create the app registration (see [setup-azure-devops.md](setup-azure-devops.md) or [setup-github.md](setup-github.md)).
+- Then either:
+  - **Client secret.** Confirm it is not expired. An expired or missing secret produces `AADSTS7000218` or `invalid_client` at token time.
+  - **Federated credential (no secret, v3).** Add one per trust under **Certificates & secrets > Federated credentials**: the GitHub repository (branch and environment), or the Azure DevOps service connection. A mismatch produces `AADSTS70021: No matching federated identity record found`. Federated credentials sign in as the same app, so layers 2 and 3 below are unchanged.
 
 ## 2. Register as a Power Platform management application
 
@@ -72,7 +74,7 @@ At the start of the Finance and Operations phase the agent downloads Microsoft's
 
 ## PowerShell version
 
-The Finance and Operations phase uses `Invoke-WebRequest -SkipHttpErrorCheck`, which requires **PowerShell 7**. The pipeline task sets `pwsh: true`, so this is satisfied on the hosted agent. If you run the script by hand under Windows PowerShell 5.1, the F&O phase is skipped with a clear warning and Phase 1 still runs normally.
+v3 requires **PowerShell 7.2 or later** for the whole run. The Azure DevOps pipelines use `pwsh` and GitHub runners have it preinstalled. Windows PowerShell 5.1 is no longer supported.
 
 ## Failure map
 
@@ -83,7 +85,8 @@ The Finance and Operations phase uses `Invoke-WebRequest -SkipHttpErrorCheck`, w
 | Failed to read Dataverse solution versions for an environment | Layer 3 | Add the application user with a role in that environment |
 | 403 on a Finance and Operations route | Layer 2 or 3 | Re-check the management app registration, then the app user |
 | 404 `RouteNotFound` on `finopsversions`, while `finopsproperties` succeeds | Not a permissions issue | Intermittent platform behaviour. Re-run. |
-| F&O phase skipped with a PowerShell version warning | Not a permissions issue | Run the task with `pwsh: true`, or use PowerShell 7 locally |
+| `AADSTS70021` (federated sign-in) | Layer 1 | The federated credential's issuer, subject or audience does not match; see the setup guide |
+| "requires PowerShell 7.2" | Not a permissions issue | Run with `pwsh` 7.2 or later |
 
 ## Least privilege note
 
