@@ -73,7 +73,7 @@ Microsoft has confirmed that the F&O Provisioning App Anchor Solution version in
 
 The Anchor Solution may be used to **detect** that F&O is installed (presence). Its **version** must not be used for anything: not the train, not a guard, not a label.
 
-The current release train comes from the **live application build** (`applicationVersion` from `finopsproperties`) through the build-prefix map. When adding a release to the built-in map, take the prefix from Microsoft's [PQU release schedule](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule) ("Application Version" column) and cite it in the commit.
+The current release train comes from the **live application build** (`applicationVersion` from `finopsproperties`) through the build-prefix map, which is built on every run from Microsoft's [PQU release schedule](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule). Do not add a step that requires users to maintain anything by hand. The built-in map is only a fallback for when the download fails; if you extend it, take the prefix from that page's "Application Version" column and cite it in the commit.
 
 ### 7. An update scope must fail safe
 

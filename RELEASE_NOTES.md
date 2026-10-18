@@ -1,5 +1,16 @@
 # Release Notes
 
+## v2.4.4 - 2026-10-18
+
+**Nothing to maintain: the release map now updates itself.**
+
+v2.4.3 worked out each environment's release from its live application build, but needed a manual `finOpsBuildTrainMap` entry for every new release. v2.4.4 removes that step. Every run downloads Microsoft's [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule) and builds the map from it, so when Microsoft publishes 10.0.50 the next run already knows it.
+
+- **No configuration change.** Existing variable groups keep working. `finOpsBuildTrainMap` is now an emergency override only and can be removed.
+- **Fail-safe.** If the schedule cannot be downloaded or parsed, the log shows a warning and the built-in map (10.0.46 to 10.0.49) is used. Environments on a newer, unknown release are skipped, not guessed. A build the schedule lists under two releases is skipped too.
+- **Network.** The agent needs outbound HTTPS to `raw.githubusercontent.com`. Microsoft-hosted agents have it; see `docs/permissions.md` for self-hosted agents.
+- New optional `finOpsScheduleUrl` (`none` disables the download).
+
 ## v2.4.3 - 2026-10-18
 
 **Upgrade before running with `finOpsApplyVersion = true`.**

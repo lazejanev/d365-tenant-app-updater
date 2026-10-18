@@ -3,7 +3,7 @@
 **Automatically update all Dynamics 365 first-party (Dataverse) apps across an entire tenant, and report Finance and Operations environment inventory, from a single Azure DevOps pipeline.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)
-![Version 2.4.3](https://img.shields.io/badge/version-2.4.3-1e90ff)
+![Version 2.4.4](https://img.shields.io/badge/version-2.4.4-1e90ff)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-0b3d91)
 ![Community project](https://img.shields.io/badge/status-community%20project-111827)
 
@@ -19,7 +19,7 @@
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
 > **Important: upgrade from v2.4.0, v2.4.1 or v2.4.2**
-> With `finOpsApplyVersion = true` and `finOpsUpdateScope = QualityUpdate`, v2.4.0 and v2.4.1 could move an environment to a **new release train** (for example 10.0.48 to 10.0.49), because they only checked Microsoft's `releaseStage` label. v2.4.2 added a release-train check, but read the train from the F&O Provisioning App Anchor Solution, which Microsoft only updates for LCS-driven updates, so it went stale after the first apply through this pipeline. v2.4.3 reads the train from the **live application build** instead, limits `VersionUpdate` to the next train and released builds, and fixes a parsing bug that reported multi-version lists as "no versions listed". Upgrade before running with `finOpsApplyVersion = true`.
+> With `finOpsApplyVersion = true` and `finOpsUpdateScope = QualityUpdate`, v2.4.0 and v2.4.1 could move an environment to a **new release train** (for example 10.0.48 to 10.0.49), because they only checked Microsoft's `releaseStage` label. v2.4.2 added a release-train check, but read the train from the F&O Provisioning App Anchor Solution, which Microsoft only updates for LCS-driven updates, so it went stale after the first apply through this pipeline. v2.4.3 reads the train from the **live application build** instead, limits `VersionUpdate` to the next train and released builds, and fixes a parsing bug that reported multi-version lists as "no versions listed". v2.4.4 builds the release map automatically from Microsoft's published PQU schedule on every run, so nothing has to be maintained. Upgrade before running with `finOpsApplyVersion = true`.
 
 ## The goal
 
@@ -131,7 +131,8 @@ Full permission setup is in [docs/permissions.md](docs/permissions.md). It is th
 | `finOpsTargetVersion` | (blank = highest matching scope) | Specific F&O version to apply. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | Extra allow-list for the F&O apply phase only. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a version apply. |
-| `finOpsBuildTrainMap` | (blank = built-in 10.0.46 to 10.0.49) | Extra live-build-prefix to release-train entries, e.g. `10.0.2900=50`. Add one line per new release. See [Finance and Operations](#finance-and-operations). |
+| `finOpsScheduleUrl` | Microsoft's published PQU schedule | Where the release map is read from on every run. `none` disables the download (built-in map only). You never need to set this. |
+| `finOpsBuildTrainMap` | (blank) | Emergency override only, e.g. `10.0.2900=50`. Not needed in normal use: the release map is read from Microsoft's schedule automatically. |
 
 `whatIf`, `usePacFallback`, `finOpsApplyVersion`, `finOpsUpdateScope` and `finOpsTargetVersion` are also exposed as **runtime parameters**, so you can override them for a single manual run.
 
@@ -186,9 +187,9 @@ From the environment's **live application build**, the `applicationVersion` that
 | `10.0.2645` | 10.0.48 |
 | `10.0.2790` | 10.0.49 |
 
-These are built in. **When Microsoft ships a new release**, add its prefix to the `finOpsBuildTrainMap` variable, for example `10.0.2900=50` (take the prefix from the "Application Version" column of that page). No code change is needed.
+**Nothing to maintain.** At the start of the Finance and Operations phase, every run downloads Microsoft's schedule (from the public source of that page) and builds this map from it. When Microsoft publishes a new release, the next run picks it up. The table above is only the built-in fallback, used if the download fails, and the log says when that happens.
 
-**If the build is not in the map, the apply is skipped** (unless the scope is `Any`), and the log names the exact prefix to add. The design is fail-safe: it can miss a patch, but `QualityUpdate` can never move an environment to a new release train.
+**If the build is still unknown, the apply is skipped** (unless the scope is `Any`). That happens only for a release Microsoft has not yet added to its schedule, or when the schedule cannot be downloaded and the release is newer than 10.0.49. The design is fail-safe: it can miss a patch, but `QualityUpdate` can never move an environment to a new release train.
 
 **Never a lower train (every scope).** A version on a lower train than the live build is never applied, even with `Any` or an explicit `finOpsTargetVersion`. Microsoft also documents that the version list only offers versions later than the installed one.
 
@@ -257,7 +258,7 @@ Some first-party apps use a guided wizard in the Power Platform Admin Center and
 - Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions.
 - Available versions depend on what the tenant's release channel exposes.
 - The `finopsversions` route has observed intermittent availability. See above.
-- The current F&O release train comes from a build-prefix map. Each new release needs one entry in `finOpsBuildTrainMap` (a release ships roughly every quarter). Until it is added, environments on that release are skipped, not guessed.
+- The current F&O release train comes from Microsoft's published PQU schedule, downloaded on every run. The agent needs outbound HTTPS to `raw.githubusercontent.com` (Microsoft-hosted agents have it). If the schedule is unreachable, the built-in map (10.0.46 to 10.0.49) is used and newer releases are skipped, not guessed.
 - Tokens are refreshed after 45 minutes, so long runs across many environments keep working within the 180-minute job timeout.
 - LCS managed environments are inventoried only, by design.
 - Install operations are triggered but not polled to completion. The run reports the operation id and moves on.
