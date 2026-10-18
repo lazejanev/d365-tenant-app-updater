@@ -25,10 +25,13 @@ Major version: production is held back by default, and the run is split into Pla
 - **Federated sign-in, no secret**: GitHub OIDC, and Azure DevOps workload identity federation through `azure-pipelines-federated.yml` (preview). `authMode` (`Auto`, `Federated`, `ClientSecret`): in `Auto` a refused federated sign-in falls back to the client secret with a warning.
 - **Waits for app installs** (`waitForInstallsMinutes`, default 30) and reports each one as Succeeded, Failed or TimedOut.
 - **Run summary on the run page** (Azure DevOps Extensions tab, GitHub job summary) and `report.json`, published as artifacts with `plan.json`.
-- **A to Z everywhere**: environments and apps are processed and listed alphabetically, ignoring case; non-production is applied before production.
+- **A to Z everywhere**: environments and apps are processed and listed alphabetically: case-insensitive, numbers in numeric order (Dev2 before Dev10), `-`, `_`, `.` and spaces treated alike, and the same order on every agent and locale (ordinal comparison, not culture rules). Non-production is applied before production.
+- **Results board**: the log ends with every environment A to Z and one colour-coded, tagged line per app (`[UPDATED]`, `[RUNNING]`, `[PLANNED]`, `[HELD]`, `[FAILED]`, ...), coloured with Azure DevOps formatting, ANSI on GitHub, and console colours locally. Production lines say which non-production environment proved the version.
+- **Run summary redesign**: counters first, then one A to Z list with a status icon per row, Needs attention, environments, and F&O.
+- **Architecture diagrams**: [docs/architecture.md](docs/architecture.md) with seven diagrams (system context, pipeline stages, production ring, module, app decision, F&O decision, sign-in), Mermaid sources in `docs/diagrams/`, and screenshots of the log and run summary.
 - F&O inventory shows each environment's **maintenance window** (`finopsadminsettings`).
 - `failOnIssues`: fail the run (exit code 1) instead of finishing with issues.
-- **Tests and CI**: Pester suite (113 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
+- **Tests and CI**: Pester suite (129 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
 
 ### Changed
 

@@ -38,6 +38,7 @@ src/D365TenantAppUpdater/
           Report.ps1                   console summary, summary.md, report.json
           Main.ps1                     Invoke-D365TenantAppUpdate
 tests/                                 Pester 5 (Unit, Scenario), fake tenant in TestHelpers.ps1
+docs/architecture.md                   diagrams; sources in docs/diagrams, images in docs/images
 pipelines/templates/                   Azure DevOps templates shared by both pipelines
 .github/workflows/                     GitHub workflow, CI, release
 ```
@@ -47,7 +48,9 @@ Rules that keep it that way:
 - Nothing outside `Host.ps1` writes `##vso[...]`, `##[group]`, `::warning::` or touches `GITHUB_*` files.
 - Every HTTP call goes through `Invoke-Http`. Tests mock `Invoke-WebRequest` once, with the fake tenant.
 - Collect first, decide second, act third. Decisions are pure functions of collected data, so the production ring sees every environment, and tests do not need a tenant.
-- Anything listed or processed is sorted with `Sort-ByDisplayName` / `Get-SortKey` (A to Z, case-insensitive).
+- Anything listed or processed is sorted with `Sort-Items` / `Sort-ByDisplayName` (natural, ordinal A to Z). Never `Sort-Object` on names: it compares with culture rules, so Windows and Linux agents would disagree.
+- Status colours go through `Write-Colored` (Host.ps1) and always repeat a text tag; colour is never the only signal.
+- Diagrams: edit `docs/diagrams/*.mmd` and re-render the matching `docs/images/*.svg` (see docs/architecture.md).
 
 ## Running the tests
 

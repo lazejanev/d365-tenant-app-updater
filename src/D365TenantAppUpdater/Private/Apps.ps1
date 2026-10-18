@@ -199,7 +199,7 @@ function Test-AppProven {
     if (-not $Index.ContainsKey($k)) { return [pscustomobject]@{ Proven = $false; By = ''; Reason = 'not installed in any non-production environment in scope' } }
     $cutoff = (Get-Now).AddDays(-$SoakDays)
     $closest = $null
-    foreach ($p in ($Index[$k] | Sort-Object { Get-SortKey $_.Environment })) {
+    foreach ($p in (Sort-Items $Index[$k] @({ $_.Environment }))) {
         if (-not (Test-VersionAtLeast -Version $p.Version -Minimum $Target)) { continue }
         if ($SoakDays -le 0) { return [pscustomobject]@{ Proven = $true; By = $p.Environment; Reason = '' } }
         if ($p.ModifiedOn -and $p.ModifiedOn -le $cutoff) { return [pscustomobject]@{ Proven = $true; By = $p.Environment; Reason = '' } }
@@ -233,7 +233,7 @@ function New-AppPlan {
             if ($s.FinOpsMarker -and $p.uniqueName -eq $s.FinOpsMarker.uniqueName) { continue }
             $candidates += $p
         }
-        $candidates = @($candidates | Sort-Object { Get-SortKey (Get-AppDisplayName $_) }, { [string]$_.uniqueName })
+        $candidates = @(Sort-Items $candidates @({ Get-AppDisplayName $_ }, { [string]$_.uniqueName }))
 
         foreach ($pkg in $candidates) {
             $avail = [string]$pkg.version

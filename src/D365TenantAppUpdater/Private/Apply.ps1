@@ -59,7 +59,7 @@ function New-ActionResult {
         Phase = $Action.Phase; Kind = $Action.Kind; Ring = $Action.Ring
         EnvironmentId = $Action.EnvironmentId; EnvironmentName = $Action.EnvironmentName
         AppUniqueName = $Action.AppUniqueName; AppName = $Action.AppName
-        From = $Action.From; To = $Action.To
+        From = $Action.From; To = $Action.To; Reason = [string]$Action.Reason
         Result = $Result; Detail = $Detail; OperationId = $OperationId
     }
 }

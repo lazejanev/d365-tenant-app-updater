@@ -245,5 +245,5 @@ function Get-FinOpsInventoryRows {
             Offered = $offered
         }
     }
-    return @($rows | Sort-Object { Get-SortKey $_.Environment }, EnvironmentId)
+    return @(Sort-Items $rows @({ $_.Environment }, { [string]$_.EnvironmentId }))
 }

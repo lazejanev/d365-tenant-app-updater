@@ -107,7 +107,7 @@ Describe 'Apply mode' {
         $r = Invoke-TestRun -Mode Apply -Ring Production -PlanFile $script:PlanPath
         Get-InstallCalls | Should -HaveCount 0
         $r.Report.results[0].Result | Should -Be 'Stale'
-        $r.Summary | Should -Match 'Stale'
+        $r.Summary | Should -Match 'Changed since plan'
     }
 
     It 'does not apply an F&O version that is no longer offered' {

@@ -163,7 +163,7 @@ Two earlier names no longer exist: `finOpsInventory` (inventory is unconditional
 
 Apply never improvises. An action is skipped and reported as `Stale` when the app's available version changed since the plan or an F&O version is no longer offered, `AlreadyDone` when the environment already has it, and `Stopped` when the current settings no longer allow it (for example the environment was added to `environmentExclude`, the app to `appExclude`, `finOpsApplyVersion` was turned off, or `productionRing` was turned on after a plan made without it). The next plan decides again.
 
-Every run writes **summary.md** (shown on the run page: the Extensions tab on Azure DevOps, the job summary on GitHub) and **report.json**. Environments and apps are processed and listed A to Z, ignoring case; within an apply, non-production goes before production.
+Every run writes **summary.md** (shown on the run page: the Extensions tab on Azure DevOps, the job summary on GitHub) and **report.json**. Environments and apps are processed and listed A to Z: case-insensitive, numbers in numeric order (Dev2 before Dev10), and the same order on every agent and locale. Within an apply, non-production goes before production.
 
 ## Runtime parameters
 

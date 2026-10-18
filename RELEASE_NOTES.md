@@ -11,8 +11,10 @@ v3 keeps every v2 setting, so your variable group keeps working, and adds the co
 - **GitHub Actions.** The same module, rules and three jobs run on GitHub. See `docs/setup-github.md`.
 - **No client secret.** Sign in with OpenID Connect on GitHub, or workload identity federation on Azure DevOps (preview). The secret remains supported, and works as a backup.
 - **You see the outcome.** App installs are followed for up to 30 minutes and reported as succeeded, failed or still running. Every run publishes a summary on the run page and a JSON report.
-- **A to Z.** Environments and apps are processed and reported in alphabetical order.
-- **Tested.** 113 automated tests run on every change, on Linux and Windows, with no tenant needed.
+- **A to Z.** Environments and apps are processed and reported in alphabetical order, with numbers in numeric order (Dev2 before Dev10), identical on every agent.
+- **A clearer results view.** The log ends with a colour-coded board, one line per app grouped by environment; the run page opens with counters and the same list.
+- **Architecture diagrams.** `docs/architecture.md` shows how it all fits together.
+- **Tested.** 129 automated tests run on every change, on Linux and Windows, with no tenant needed.
 
 **Upgrading:** PowerShell 7.2+ is now required for the whole run (Microsoft-hosted agents have it). Copy `src/` along with `scripts/`, and replace `azure-pipelines.yml`. Full guide: `docs/upgrading-to-v3.md`.
 

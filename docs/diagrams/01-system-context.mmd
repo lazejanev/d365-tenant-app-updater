@@ -1,0 +1,29 @@
+flowchart LR
+    subgraph CI["Pipeline host"]
+        direction TB
+        ADO["Azure DevOps<br/>azure-pipelines.yml"]
+        GH["GitHub Actions<br/>tenant-app-updater.yml"]
+    end
+    MOD["D365TenantAppUpdater<br/>PowerShell 7 module"]
+    ADO --> MOD
+    GH --> MOD
+    subgraph MS["Microsoft cloud"]
+        direction TB
+        ENTRA["Microsoft Entra ID<br/>tokens: secret or federated"]
+        BAP["BAP admin API<br/>list every environment"]
+        PPA["Power Platform API<br/>App Management + F#amp;O routes"]
+        DV["Dataverse, per environment<br/>installed managed solutions"]
+    end
+    SCHED["Microsoft PQU schedule<br/>raw.githubusercontent.com (read only)"]
+    MOD -- "1 sign in" --> ENTRA
+    MOD -- "2 discover" --> BAP
+    MOD -- "3 available apps, F#amp;O builds, install, apply" --> PPA
+    MOD -- "4 installed versions" --> DV
+    MOD -- "5 build to release map" --> SCHED
+    MOD -. "summary.md, plan.json, report.json" .-> CI
+    classDef host fill:#eef4ff,stroke:#3b6fd8,color:#16325c
+    classDef core fill:#16325c,stroke:#16325c,color:#ffffff
+    classDef ms fill:#f4f6f8,stroke:#8a96a3,color:#1f2328
+    class ADO,GH host
+    class MOD core
+    class ENTRA,BAP,PPA,DV,SCHED ms

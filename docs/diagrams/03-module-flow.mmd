@@ -1,0 +1,29 @@
+flowchart TB
+    E["scripts/Update-TenantApps.ps1<br/>thin entry point"] --> M["Invoke-D365TenantAppUpdate<br/>Main.ps1"]
+    M --> SET["Settings<br/>parameters · overrides · variables · defaults"]
+    M --> AUTH["Auth<br/>Auto · Federated · ClientSecret · token cache"]
+    M --> DISC["Discovery<br/>environments A to Z · ring per environment"]
+    DISC --> COL
+    subgraph COL["Collect: read only"]
+        direction LR
+        APPS["Apps.ps1<br/>available vs installed"]
+        FO["FinOps.ps1<br/>live build · offered versions<br/>maintenance window"]
+    end
+    COL --> PLAN["Plan.ps1<br/>decide: update · retry · hold · skip<br/>production ring proof"]
+    PLAN --> PJ[("plan.json")]
+    PJ --> APPLY["Apply.ps1<br/>settings gate · re-validate<br/>install · apply · wait"]
+    APPLY --> REP["Report.ps1<br/>results board · summary.md · report.json"]
+    PLAN --> REP
+    HOST["Host.ps1<br/>Azure DevOps · GitHub · local<br/>colours · outputs · exit code"]
+    REP -.-> HOST
+    M -.-> HOST
+    HTTP["Http.ps1<br/>one HTTP helper · GET retries"]
+    APPS -.-> HTTP
+    FO -.-> HTTP
+    APPLY -.-> HTTP
+    classDef core fill:#16325c,stroke:#16325c,color:#ffffff
+    classDef step fill:#eef4ff,stroke:#3b6fd8,color:#16325c
+    classDef infra fill:#f4f6f8,stroke:#8a96a3,color:#1f2328
+    class M core
+    class SET,AUTH,DISC,APPS,FO,PLAN,APPLY,REP step
+    class HOST,HTTP,E,PJ infra

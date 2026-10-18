@@ -10,8 +10,8 @@ v3.0.0 is a major version because **production is now held back by default** and
 | Pipeline | One stage, one job | Plan → Apply non-production → Apply production | Update the pipeline YAML (below). The first production apply asks to permit the `d365-production` environment |
 | PowerShell | 5.1 for apps, 7 for F&O | **7.2 or later for everything** | Nothing on Microsoft-hosted agents. Self-hosted: install PowerShell 7 |
 | App installs | Triggered, not followed | Waits up to 30 minutes and reports each result | Nothing. `waitForInstallsMinutes = 0` restores v2 behaviour |
-| Ordering | API order | **A to Z** (environments and apps), non-production before production | Nothing |
-| Reports | Log only | `summary.md` on the run page (Extensions tab) and `report.json` artifact | Nothing |
+| Ordering | API order | **A to Z** (environments and apps, Dev2 before Dev10), non-production before production | Nothing |
+| Reports | Log only | A colour-coded results board at the end of the log, `summary.md` on the run page (Extensions tab) and `report.json` artifact | Nothing |
 | `appExclude` partial matches | Silent | Still work, reported as deprecated | Replace with exact names or `*` wildcards when convenient |
 | Sign-in | Client secret | Client secret, or federated (no secret) | Optional: [federated sign-in](setup-azure-devops.md#federated-sign-in-preview) |
 | GitHub Actions | Not supported | Supported | Optional: [setup-github.md](setup-github.md) |

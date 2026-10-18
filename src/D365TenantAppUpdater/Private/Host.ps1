@@ -75,6 +75,36 @@ function Write-RunError {
     }
 }
 
+function Write-Colored {
+    <#
+    .SYNOPSIS
+        One log line in a colour, on every host:
+          Azure DevOps - formatting prefixes (##[section] green, ##[command]
+                         blue, ##[debug] purple, ##[warning] yellow,
+                         ##[error] red). They colour the line only; they do
+                         not create warnings or errors on the run.
+          GitHub       - ANSI colour codes, which the Actions log renders.
+          Local        - console colours.
+        Colour always repeats what the text already says, never replaces it.
+    #>
+    param([AllowEmptyString()] [string] $Text, [ValidateSet('Green', 'Blue', 'Magenta', 'Yellow', 'Red', 'Plain')] [string] $Color = 'Plain')
+    if ($Color -eq 'Plain') { Write-Host $Text; return }
+    switch (Get-HostKind) {
+        'AzureDevOps' {
+            $prefix = @{ Green = '##[section]'; Blue = '##[command]'; Magenta = '##[debug]'; Yellow = '##[warning]'; Red = '##[error]' }[$Color]
+            Write-Host "$prefix$Text"
+        }
+        'GitHub' {
+            $code = @{ Green = '32'; Blue = '36'; Magenta = '35'; Yellow = '33'; Red = '31' }[$Color]
+            Write-Host "$([char]27)[${code}m$Text$([char]27)[0m"
+        }
+        default {
+            $fg = @{ Green = 'Green'; Blue = 'Cyan'; Magenta = 'Magenta'; Yellow = 'Yellow'; Red = 'Red' }[$Color]
+            Write-Host $Text -ForegroundColor $fg
+        }
+    }
+}
+
 function Set-RunOutput {
     # A value later stages or jobs can read (has-actions flags).
     param([string] $Name, [string] $Value)

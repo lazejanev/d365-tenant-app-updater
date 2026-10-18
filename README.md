@@ -15,7 +15,7 @@
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)
 ![PowerShell 7](https://img.shields.io/badge/PowerShell%207-5391FE?logo=powershell&logoColor=white)
 
-**Contents:** [Goal](#the-goal) | [What's new in v3](#whats-new-in-v3) | [How it works](#how-it-works) | [Production ring](#production-ring) | [Requirements](#requirements) | [Setup](#setup) | [Configuration](#configuration) | [Finance and Operations](#finance-and-operations) | [Pipelines](#pipelines-and-workflows-in-this-repo) | [Parameters](docs/parameters.md)
+**Contents:** [Goal](#the-goal) | [What's new in v3](#whats-new-in-v3) | [How it works](#how-it-works) | [Architecture](docs/architecture.md) | [Production ring](#production-ring) | [Requirements](#requirements) | [Setup](#setup) | [Configuration](#configuration) | [Finance and Operations](#finance-and-operations) | [Pipelines](#pipelines-and-workflows-in-this-repo) | [Parameters](docs/parameters.md)
 
 > **Note**
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
@@ -39,43 +39,24 @@ Non-production environments update as soon as something is available, so you tes
 - **GitHub Actions**, alongside Azure DevOps. Same module, same rules.
 - **No client secret needed.** OpenID Connect on GitHub, workload identity federation on Azure DevOps (preview). The secret still works, and is the backup.
 - **You see the outcome.** App installs are followed and reported; every run publishes a summary on the run page.
-- **A to Z.** Environments and apps are processed and reported alphabetically.
-- **Tested.** 113 automated tests on every change, no tenant required.
+- **A to Z.** Environments and apps are processed and reported alphabetically, numbers in numeric order (Dev2 before Dev10), the same on every agent.
+- **A results board.** The log ends with one colour-coded line per app, grouped by environment; the run page shows the same with counters.
+- **Architecture diagrams.** [docs/architecture.md](docs/architecture.md).
+- **Tested.** 129 automated tests on every change, no tenant required.
 
 Full list: [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
-```
-Azure DevOps (azure-pipelines.yml)  or  GitHub Actions (.github/workflows/tenant-app-updater.yml)
-        |
-        v
-  scripts/Update-TenantApps.ps1  ->  D365TenantAppUpdater module (src/)
-        |
-   ===== PLAN (changes nothing) =====
-        |  Sign in (client secret, or federated: GitHub OIDC / Azure DevOps WIF)
-        |  1. List every environment (BAP admin API), keep Dataverse-linked ones,
-        |     apply environmentFilter / environmentExclude, sort A to Z,
-        |     tag each Production or NonProduction.
-        |  2. Per environment, collect:
-        |       AVAILABLE apps <- /appmanagement/environments/{id}/applicationPackages
-        |       INSTALLED      <- {instanceUrl}/api/data/v9.2/solutions (managed)
-        |       F&O (if installed): live build (finopsproperties), offered
-        |       versions (finopsversions), maintenance window
-        |  3. Decide, per app (A to Z):
-        |       update only when available is strictly newer than installed;
-        |       production only when a non-production environment runs it.
-        |     Per F&O environment: target per finOpsUpdateScope, never a lower
-        |     train, production only when proven.
-        |  -> plan.json, summary.md, report.json
-        |
-   ===== APPLY non-production, then APPLY production =====
-        |  4. Re-check each action against the live tenant, then install
-        |     (POST .../install) or apply (POST .../finopsversions/{v}/apply).
-        |  5. Wait for app installs (waitForInstallsMinutes) and report each one.
-        v
-   Updated tenant + summary on the run page
-```
+![System context](docs/images/01-system-context.svg)
+
+![Pipeline stages](docs/images/02-pipeline-stages.svg)
+
+1. **Plan** (changes nothing). Sign in (client secret, or federated: GitHub OIDC / Azure DevOps). List every environment, keep the Dataverse-linked ones, apply `environmentFilter` / `environmentExclude`, sort A to Z, and tag each one Production or NonProduction. For each environment, read the available apps (App Management API), the installed versions (Dataverse managed solutions) and, where F&O is installed, the live build, offered versions and maintenance window. Then decide every app and F&O update, including the production ring.
+2. **Apply non-production**, then **Apply production**. Re-check each action against the live tenant and the current settings, install or apply, and wait for app installs.
+3. **Report**. The results board in the log, `summary.md` on the run page, `report.json` and `plan.json` as artifacts.
+
+How each decision is made, the module layout and the sign-in flow: [docs/architecture.md](docs/architecture.md).
 
 **Why installed versions come from Dataverse.** The App Management API tells you which apps exist and the latest **available** version, but it is not a reliable source for what is **installed**. The trustworthy source is the app's managed solution version inside each environment's Dataverse. That is why the service principal needs an application-user role in every environment.
 
@@ -212,9 +193,17 @@ The `finopsversions` route has been observed to intermittently return HTTP 404 `
 
 ### What each run produces
 
-- **summary.md**, shown on the run page (Azure DevOps Extensions tab, GitHub job summary): planned actions or results, **Held for production**, **Needs attention**, all environments A to Z, and the F&O table.
+- **The results board**, the last view in the log: every environment A to Z, and under it one colour-coded line per app that was updated, is updating, is held for production or failed. Each line starts with a tag (`[UPDATED]`, `[RUNNING]`, `[HELD]`, `[FAILED]`, ...), so it reads the same without colour.
+
+  ![Results board in the Azure DevOps log](docs/images/log-azure-devops.png)
+
+- **summary.md** on the run page (Azure DevOps Extensions tab, GitHub job summary): counters, the same A to Z list with status icons, **Needs attention**, all environments, and the F&O table.
+
+  ![Run summary](docs/images/run-summary.png)
+
 - **plan.json** and **report.json**, published as run artifacts.
-- The log, with one section per environment in the same order.
+
+<sub>Screenshots from a demo run against the test suite's fake tenant; the names are made up.</sub>
 
 A run where something could not be read or an install failed ends **with issues** (orange on Azure DevOps, warning annotations on GitHub), so a missing application user in one environment never hides behind a green tick. Sign-in or discovery failures fail the run.
 

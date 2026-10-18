@@ -86,11 +86,8 @@ function Get-OrderedActions {
     # before F&O for the same environment.
     param($Actions, [string] $Ring = 'All')
     $list = @($Actions | Where-Object { $Ring -eq 'All' -or $_.Ring -eq $Ring })
-    return @($list | Sort-Object @{ Expression = { if ($_.Ring -eq 'Production') { 1 } else { 0 } } },
-                                 @{ Expression = { Get-SortKey $_.EnvironmentName } },
-                                 @{ Expression = { $_.EnvironmentId } },
-                                 @{ Expression = { if ($_.Phase -eq 'FinOps') { 1 } else { 0 } } },
-                                 @{ Expression = { Get-SortKey $_.AppName } })
+    return @(Sort-Items $list @({ if ($_.Ring -eq 'Production') { 1 } else { 0 } }, { $_.EnvironmentName }, { [string]$_.EnvironmentId },
+                                { if ($_.Phase -eq 'FinOps') { 1 } else { 0 } }, { $_.AppName }))
 }
 
 function Save-RunPlan {

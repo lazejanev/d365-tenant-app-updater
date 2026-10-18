@@ -1,0 +1,18 @@
+flowchart LR
+    T(["Manual run or<br/>nightly schedule"]) --> P["<b>Stage 1 · Plan</b><br/>read the whole tenant<br/>decide every update<br/>changes nothing"]
+    P --> ART[("plan.json<br/>summary.md<br/>report.json")]
+    ART -- "if non-production<br/>actions" --> NP["<b>Stage 2 · Apply<br/>non-production</b><br/>re-check, install / apply,<br/>wait for app installs"]
+    NP --> GATE{{"Optional approval<br/>d365-production"}}
+    ART -. "if production actions<br/>(already proven)" .-> GATE
+    GATE --> PR["<b>Stage 3 · Apply<br/>production</b><br/>re-check, install / apply,<br/>wait for app installs"]
+    PR --> DONE(["Summary on<br/>the run page"])
+    classDef plan fill:#eef4ff,stroke:#3b6fd8,color:#16325c
+    classDef np fill:#eaf7ee,stroke:#2f9e58,color:#14532d
+    classDef prod fill:#f6efff,stroke:#8250df,color:#3b1f72
+    classDef gate fill:#fff8e6,stroke:#c98a00,color:#5c4100
+    classDef art fill:#ffffff,stroke:#8a96a3,color:#1f2328
+    class P plan
+    class NP np
+    class PR prod
+    class GATE gate
+    class ART,T,DONE art

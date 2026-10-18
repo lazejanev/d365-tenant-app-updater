@@ -27,6 +27,18 @@ Describe 'Ordering (A to Z)' {
         $r.Output.IndexOf('ENVIRONMENT: Beta') | Should -BeLessThan $r.Output.IndexOf('ENVIRONMENT: Zeta')
     }
 
+    It 'orders environments the way people count (Dev2 before Dev10), in discovery, apply and reports' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'd10' -Name 'Dev10' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))),
+            (New-FakeEnv -Id 'd2' -Name 'Dev2' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))),
+            (New-FakeEnv -Id 'd1' -Name 'dev1' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0')))
+        )
+        $r = Invoke-TestRun
+        @(Get-InstallCalls | ForEach-Object { if ($_ -match '/environments/([^/]+)/') { $Matches[1] } }) | Should -Be @('d1', 'd2', 'd10')
+        @($r.Report.environments | ForEach-Object Environment) | Should -Be @('dev1', 'Dev2', 'Dev10')
+        @($r.Report.results | ForEach-Object EnvironmentName) | Should -Be @('dev1', 'Dev2', 'Dev10')
+    }
+
     It 'applies non-production before production' {
         Set-FakeTenant -Environments @(
             (New-FakeEnv -Id 'p' -Name 'Alpha Prod' -Sku 'Production' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))),
