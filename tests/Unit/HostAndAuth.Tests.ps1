@@ -92,6 +92,38 @@ Describe 'Sign-in' {
         Should -Invoke -ModuleName D365TenantAppUpdater Invoke-WebRequest -ParameterFilter { $Uri -like '*oauth2*' -and $Body -match 'client_assertion=gh-jwt' -and $Body -notmatch 'client_secret' }
     }
 
+    It 'falls back to the client secret when federated sign-in is refused (authMode = Auto)' {
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest {
+            $u = [string]$Uri
+            if ($u -like 'https://token.actions.example/*') { return [pscustomobject]@{ StatusCode = 200; Content = '{"value":"gh-jwt"}'; Headers = @{} } }
+            if ($Body -match 'client_assertion=') { return [pscustomobject]@{ StatusCode = 400; Content = '{"error":"invalid_client","error_description":"AADSTS70021: No matching federated identity record found."}'; Headers = @{} } }
+            return [pscustomobject]@{ StatusCode = 200; Content = '{"access_token":"secret-tok","expires_in":3600}'; Headers = @{} }
+        }
+        InModuleScope D365TenantAppUpdater {
+            $env:ACTIONS_ID_TOKEN_REQUEST_URL = 'https://token.actions.example/x'; $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'rt'
+            $s = Get-RunSettings -Bound @{ ClientId = 'c'; TenantId = 't'; ClientSecret = 's' }
+            $null = Initialize-Auth -Settings $s
+            $out = @(Get-AccessToken -Settings $s -Scope 'x/.default' 6>&1)
+            $out[-1] | Should -Be 'secret-tok'
+            ($out -join ' ') | Should -Match 'No matching federated identity record'
+            $script:AuthState.Mode | Should -Be 'ClientSecret'
+        }
+    }
+
+    It 'does not fall back when authMode = Federated' {
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest {
+            $u = [string]$Uri
+            if ($u -like 'https://token.actions.example/*') { return [pscustomobject]@{ StatusCode = 200; Content = '{"value":"gh-jwt"}'; Headers = @{} } }
+            return [pscustomobject]@{ StatusCode = 400; Content = '{"error":"invalid_client","error_description":"AADSTS70021"}'; Headers = @{} }
+        }
+        InModuleScope D365TenantAppUpdater {
+            $env:ACTIONS_ID_TOKEN_REQUEST_URL = 'https://token.actions.example/x'; $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'rt'
+            $s = Get-RunSettings -Bound @{ ClientId = 'c'; TenantId = 't'; ClientSecret = 's'; AuthMode = 'Federated' }
+            $null = Initialize-Auth -Settings $s
+            { Get-AccessToken -Settings $s -Scope 'x/.default' } | Should -Throw '*AADSTS70021*'
+        }
+    }
+
     It 'caches tokens per scope and renews them before they expire' {
         $global:FakeNow = [datetime]::new(2026, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
         Mock -ModuleName D365TenantAppUpdater Get-Now { $global:FakeNow }

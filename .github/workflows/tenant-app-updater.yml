@@ -1,0 +1,162 @@
+# =====================================================================
+# d365-tenant-app-updater v3 - GitHub Actions workflow
+#
+# Keeps Dynamics 365 first-party (Dataverse) apps and Finance and
+# Operations versions current across every environment of a tenant.
+#
+#   plan                 reads the tenant, writes plan.json and the job
+#                        summary. Changes nothing.
+#   apply-nonproduction  applies the non-production part of the plan.
+#   apply-production     applies the production part of the plan, in the
+#                        GitHub environment "d365-production" (add required
+#                        reviewers there if you want approval; optional).
+#
+# Sign-in: OpenID Connect (no secret) by default. Add a federated
+# credential to the app registration for this repository (two subjects,
+# see docs/setup-github.md). A client secret (secret D365_CLIENT_SECRET)
+# is the fallback and is only used when OIDC is not available.
+#
+# Settings are repository variables (Settings > Secrets and variables >
+# Actions > Variables). Only D365_CLIENT_ID and D365_TENANT_ID are required.
+# Setup: docs/setup-github.md
+# =====================================================================
+
+name: D365 tenant app updater
+
+on:
+  workflow_dispatch:
+    inputs:
+      whatIf:
+        description: 'Plan only (do not install or apply)'
+        type: choice
+        options: [useVariableOrDefault, 'true', 'false']
+        default: useVariableOrDefault
+      finOpsApplyVersion:
+        description: 'Apply F&O version (CHANGES environments)'
+        type: choice
+        options: [useVariableOrDefault, 'true', 'false']
+        default: useVariableOrDefault
+      finOpsUpdateScope:
+        description: 'F&O update scope'
+        type: choice
+        options: [useVariableOrDefault, QualityUpdate, VersionUpdate, Any]
+        default: useVariableOrDefault
+      finOpsTargetVersion:
+        description: 'F&O target version (blank = highest matching scope)'
+        type: string
+        default: ''
+  # Uncomment to run nightly (UTC). Note: GitHub disables scheduled
+  # workflows in public repositories after 60 days without repository
+  # activity; re-enable them in the Actions tab.
+  # schedule:
+  #   - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+  id-token: write   # OpenID Connect sign-in (no client secret)
+
+concurrency:
+  group: d365-tenant-app-updater
+  cancel-in-progress: false
+
+env:
+  D365_CLIENT_ID: ${{ vars.D365_CLIENT_ID }}
+  D365_TENANT_ID: ${{ vars.D365_TENANT_ID }}
+  D365_CLIENT_SECRET: ${{ secrets.D365_CLIENT_SECRET }}
+  AuthMode: ${{ vars.AUTH_MODE }}
+  # Queue-time choices win over repository variables, which win over the
+  # built-in defaults. 'useVariableOrDefault' means "not set here".
+  WhatIfOverride: ${{ inputs.whatIf != 'useVariableOrDefault' && inputs.whatIf || '' }}
+  FinOpsApplyVersionOverride: ${{ inputs.finOpsApplyVersion != 'useVariableOrDefault' && inputs.finOpsApplyVersion || '' }}
+  FinOpsUpdateScopeOverride: ${{ inputs.finOpsUpdateScope != 'useVariableOrDefault' && inputs.finOpsUpdateScope || '' }}
+  FinOpsTargetVersionOverride: ${{ inputs.finOpsTargetVersion }}
+  WhatIf: ${{ vars.WHAT_IF }}
+  EnvironmentFilter: ${{ vars.ENVIRONMENT_FILTER }}
+  EnvironmentExclude: ${{ vars.ENVIRONMENT_EXCLUDE }}
+  AppExclude: ${{ vars.APP_EXCLUDE }}
+  RetryFailedInstalls: ${{ vars.RETRY_FAILED_INSTALLS }}
+  DumpDiagnostics: ${{ vars.DUMP_DIAGNOSTICS }}
+  DumpSolutionCatalog: ${{ vars.DUMP_SOLUTION_CATALOG }}
+  UsePacFallback: ${{ vars.USE_PAC_FALLBACK }}
+  FinOpsApplyVersion: ${{ vars.FINOPS_APPLY_VERSION }}
+  FinOpsUpdateScope: ${{ vars.FINOPS_UPDATE_SCOPE }}
+  FinOpsTargetVersion: ${{ vars.FINOPS_TARGET_VERSION }}
+  FinOpsEnvironmentFilter: ${{ vars.FINOPS_ENVIRONMENT_FILTER }}
+  FinOpsDeploymentTypes: ${{ vars.FINOPS_DEPLOYMENT_TYPES }}
+  FinOpsScheduleUrl: ${{ vars.FINOPS_SCHEDULE_URL }}
+  FinOpsBuildTrainMap: ${{ vars.FINOPS_BUILD_TRAIN_MAP }}
+  ProductionRing: ${{ vars.PRODUCTION_RING }}
+  ProductionEnvironmentTypes: ${{ vars.PRODUCTION_ENVIRONMENT_TYPES }}
+  ProductionEnvironments: ${{ vars.PRODUCTION_ENVIRONMENTS }}
+  ProductionSoakDays: ${{ vars.PRODUCTION_SOAK_DAYS }}
+  WaitForInstallsMinutes: ${{ vars.WAIT_FOR_INSTALLS_MINUTES }}
+  FailOnIssues: ${{ vars.FAIL_ON_ISSUES }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      hasNonProductionActions: ${{ steps.plan.outputs.hasNonProductionActions }}
+      hasProductionActions: ${{ steps.plan.outputs.hasProductionActions }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Plan updates (changes nothing)
+        id: plan
+        shell: pwsh
+        run: ./scripts/Update-TenantApps.ps1 -Mode Plan -OutputDirectory "$env:RUNNER_TEMP/plan"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan
+          if-no-files-found: ignore
+
+  apply-nonproduction:
+    name: Apply non-production
+    needs: plan
+    if: needs.plan.outputs.hasNonProductionActions == 'true' && inputs.whatIf != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan
+      - name: Apply non-production actions
+        shell: pwsh
+        run: ./scripts/Update-TenantApps.ps1 -Mode Apply -Ring NonProduction -PlanFile "$env:RUNNER_TEMP/plan/plan.json" -OutputDirectory "$env:RUNNER_TEMP/apply"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apply-nonproduction
+          path: ${{ runner.temp }}/apply
+          if-no-files-found: ignore
+
+  apply-production:
+    name: Apply production
+    needs: [plan, apply-nonproduction]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      needs.plan.outputs.hasProductionActions == 'true' && inputs.whatIf != 'true' &&
+      (needs.apply-nonproduction.result == 'success' || needs.apply-nonproduction.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: d365-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan
+      - name: Apply production actions
+        shell: pwsh
+        run: ./scripts/Update-TenantApps.ps1 -Mode Apply -Ring Production -PlanFile "$env:RUNNER_TEMP/plan/plan.json" -OutputDirectory "$env:RUNNER_TEMP/apply"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apply-production
+          path: ${{ runner.temp }}/apply
+          if-no-files-found: ignore

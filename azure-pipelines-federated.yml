@@ -1,0 +1,102 @@
+# =====================================================================
+# d365-tenant-app-updater v3 - Azure DevOps pipeline (workload identity
+# federation, PREVIEW: no client secret is stored anywhere)
+#
+# Same stages as azure-pipelines.yml. Sign-in uses the pipeline's OIDC
+# token for an Azure Resource Manager service connection that uses
+# workload identity federation with the SAME app registration.
+#
+# One-time setup (docs/setup-azure-devops.md, "Federated sign-in"):
+#   1. Create the service connection (Azure Resource Manager, workload
+#      identity federation, manual) for the app registration.
+#   2. Put its name in serviceConnection below.
+#   3. Add variable serviceConnectionId (the connection's ID) to the
+#      variable group. ClientId and TenantId are optional here: the
+#      service connection supplies them.
+#
+# The PAC CLI fallback (usePacFallback) needs a client secret and is
+# ignored in this pipeline.
+# =====================================================================
+
+name: 'd365-tenant-app-updater-$(Date:yyyyMMdd)$(Rev:.r)'
+
+# ---------------------------------------------------------------------
+# Runtime parameters (chosen at queue time)
+# ---------------------------------------------------------------------
+parameters:
+  - name: whatIf
+    displayName: 'Plan only (do not install or apply)'
+    type: string
+    default: useLibraryOrDefault
+    values:
+      - useLibraryOrDefault
+      - 'true'
+      - 'false'
+
+  - name: finOpsApplyVersion
+    displayName: 'Apply F&O version (CHANGES environments)'
+    type: string
+    default: useLibraryOrDefault
+    values:
+      - useLibraryOrDefault
+      - 'true'
+      - 'false'
+
+  - name: finOpsUpdateScope
+    displayName: 'F&O update scope (QualityUpdate = PQU on the same release train, VersionUpdate = next release train only, Any = highest regardless)'
+    type: string
+    default: useLibraryOrDefault
+    values:
+      - useLibraryOrDefault
+      - 'QualityUpdate'
+      - 'VersionUpdate'
+      - 'Any'
+
+  - name: finOpsTargetVersion
+    displayName: 'F&O target version (blank = highest matching scope)'
+    type: string
+    default: ' '
+
+# ---------------------------------------------------------------------
+# Triggers (manual/scheduled). Uncomment the schedule to run nightly.
+# ---------------------------------------------------------------------
+trigger: none
+pr: none
+
+# schedules:
+#   - cron: '0 2 * * *'
+#     displayName: 'Scheduled tenant app update'
+#     branches:
+#       include:
+#         - main
+#     always: true
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  - group: D365-TenantAppUpdater
+
+  # Queue-time overrides. The sentinel resolves to blank so the run falls
+  # back to the library value, then to the built-in default.
+  - name: whatIfOverride
+    value: ${{ replace(parameters.whatIf, 'useLibraryOrDefault', '') }}
+  - name: finOpsApplyOverride
+    value: ${{ replace(parameters.finOpsApplyVersion, 'useLibraryOrDefault', '') }}
+  - name: finOpsUpdateScopeOverride
+    value: ${{ replace(parameters.finOpsUpdateScope, 'useLibraryOrDefault', '') }}
+  - name: finOpsTargetVersionOverride
+    value: ${{ parameters.finOpsTargetVersion }}
+  # The Azure Resource Manager service connection (workload identity
+  # federation). Must be a literal: service connections are resolved when
+  # the pipeline is compiled.
+  - name: serviceConnection
+    value: 'd365-tenant-app-updater-wif'
+
+stages:
+  - template: pipelines/templates/updater-stages.yml
+    parameters:
+      auth: federated
+      serviceConnection: ${{ variables.serviceConnection }}
+      whatIf: ${{ parameters.whatIf }}
+      usePacFallback: 'false'

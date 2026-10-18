@@ -144,7 +144,7 @@ function Get-FakeCalls {
 
 function Initialize-TestEnvironmentVariables {
     # Clears every setting variable so tests never inherit the machine's.
-    $names = @('D365_CLIENT_ID', 'D365_CLIENT_SECRET', 'D365_TENANT_ID', 'GITHUB_ACTIONS', 'TF_BUILD', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    $names = @('D365_CLIENT_ID', 'D365_CLIENT_SECRET', 'D365_TENANT_ID', 'AZURESUBSCRIPTION_CLIENT_ID', 'AZURESUBSCRIPTION_TENANT_ID', 'GITHUB_ACTIONS', 'TF_BUILD', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
         'SYSTEM_OIDCREQUESTURI', 'SYSTEM_ACCESSTOKEN', 'AZURESUBSCRIPTION_SERVICE_CONNECTION_ID', 'GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY', 'UpdateFinOpsVersion', 'FinOpsInventory',
         'Authority', 'BapApiRoot', 'BapApiVersion', 'PowerPlatformScope', 'PpApiRoot', 'AppManagementApiVersion', 'FinOpsApiVersion', 'DumpDiagnostics', 'DumpSolutionCatalog',
         'RetryFailedInstalls', 'WhatIf', 'EnvironmentFilter', 'EnvironmentExclude', 'AppExclude', 'UsePacFallback', 'FinOpsApplyVersion', 'FinOpsTargetVersion',

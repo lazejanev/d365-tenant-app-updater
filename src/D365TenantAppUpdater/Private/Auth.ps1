@@ -102,21 +102,38 @@ function Initialize-Auth {
     return $script:AuthState
 }
 
+function Request-Token {
+    param($Settings, [string] $Scope)
+    $fields = [ordered]@{ client_id = $Settings.ClientId; grant_type = 'client_credentials'; scope = $Scope }
+    if ($script:AuthState.Mode -eq 'Federated') {
+        $fields['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+        try { $fields['client_assertion'] = Get-FederatedAssertion -Settings $Settings -Source $script:AuthState.Source }
+        catch { return [pscustomobject]@{ Status = 0; Text = (Get-ErrorText $_); Json = $null; Transport = $true; Headers = @{} } }
+    }
+    else {
+        $fields['client_secret'] = $Settings.ClientSecret
+    }
+    return Invoke-Http -Method 'POST' -Uri $Settings.Authority -Body (ConvertTo-FormBody $fields) -ContentType 'application/x-www-form-urlencoded'
+}
+
 function Get-AccessToken {
     param([Parameter(Mandatory)] $Settings, [Parameter(Mandatory)] [string] $Scope)
     $cached = $script:TokenCache[$Scope]
     if ($cached -and $cached.ExpiresAt -gt (Get-Now).AddMinutes(5)) { return $cached.Token }
     if (-not $script:AuthState) { $null = Initialize-Auth -Settings $Settings }
 
-    $fields = [ordered]@{ client_id = $Settings.ClientId; grant_type = 'client_credentials'; scope = $Scope }
-    if ($script:AuthState.Mode -eq 'Federated') {
-        $fields['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
-        $fields['client_assertion'] = Get-FederatedAssertion -Settings $Settings -Source $script:AuthState.Source
+    $r = Request-Token -Settings $Settings -Scope $Scope
+    # authMode = Auto: federated first, the client secret as the backup.
+    # If the federated sign-in is refused (for example no federated
+    # credential on the app registration yet) and a secret exists, switch
+    # to the secret for the rest of the run.
+    if ((-not (Test-HttpOk $r) -or -not $r.Json.access_token) -and $script:AuthState.Mode -eq 'Federated' -and $Settings.AuthMode -eq 'Auto' -and -not (Test-Unset $Settings.ClientSecret)) {
+        $why = Get-ApiErrorMessage $r
+        if ($r.Json -and $r.Json.error_description) { $why = [string]$r.Json.error_description }
+        Write-RunWarning "Federated sign-in ($($script:AuthState.Source) OIDC) was refused, so the client secret is used instead. Add the federated credential to stop using the secret. $(Format-RestFailure $r). $why"
+        $script:AuthState = [pscustomobject]@{ Mode = 'ClientSecret'; Source = '' }
+        $r = Request-Token -Settings $Settings -Scope $Scope
     }
-    else {
-        $fields['client_secret'] = $Settings.ClientSecret
-    }
-    $r = Invoke-Http -Method 'POST' -Uri $Settings.Authority -Body (ConvertTo-FormBody $fields) -ContentType 'application/x-www-form-urlencoded'
     if (-not (Test-HttpOk $r) -or -not $r.Json.access_token) {
         $msg = Get-ApiErrorMessage $r
         if ($r.Json -and $r.Json.error_description) { $msg = [string]$r.Json.error_description }

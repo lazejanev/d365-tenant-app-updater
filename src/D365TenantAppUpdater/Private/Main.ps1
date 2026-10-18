@@ -86,9 +86,12 @@ function Invoke-D365TenantAppUpdate {
     $version = Get-D365TenantAppUpdaterVersion
     $bound = @{}
     foreach ($k in $Setting.Keys) { $bound[$k] = [string]$Setting[$k] }
-    if ($ClientId) { $bound['ClientId'] = $ClientId } elseif ($env:D365_CLIENT_ID) { $bound['ClientId'] = $env:D365_CLIENT_ID }
-    if ($ClientSecret) { $bound['ClientSecret'] = $ClientSecret } elseif ($env:D365_CLIENT_SECRET) { $bound['ClientSecret'] = $env:D365_CLIENT_SECRET }
-    if ($TenantId) { $bound['TenantId'] = $TenantId } elseif ($env:D365_TENANT_ID) { $bound['TenantId'] = $env:D365_TENANT_ID }
+    # Sign-in identity: parameter, then D365_* variable, then (Azure DevOps
+    # federated pipeline) the identity of the service connection.
+    $pick = { param($a, $b, $c) foreach ($v in @($a, $b, $c)) { if (-not (Test-Unset $v)) { return [string]$v } }; return '' }
+    $bound['ClientId'] = & $pick $ClientId $env:D365_CLIENT_ID $env:AZURESUBSCRIPTION_CLIENT_ID
+    $bound['ClientSecret'] = & $pick $ClientSecret $env:D365_CLIENT_SECRET ''
+    $bound['TenantId'] = & $pick $TenantId $env:D365_TENANT_ID $env:AZURESUBSCRIPTION_TENANT_ID
 
     $settings = Get-RunSettings -Bound $bound
     if (-not $OutputDirectory) { $OutputDirectory = Get-DefaultOutputDirectory }

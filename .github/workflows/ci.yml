@@ -1,0 +1,80 @@
+# Runs the Pester suite and PSScriptAnalyzer on every pull request and on
+# pushes to main. No tenant is contacted: every call is mocked.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Pester (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester 5.7.1
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          $c = New-PesterConfiguration
+          $c.Run.Path = './tests'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Normal'
+          $c.TestResult.Enabled = $true
+          $c.TestResult.OutputPath = 'test-results.xml'
+          Invoke-Pester -Configuration $c
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results.xml
+
+  analyze:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyze
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $r = @(Invoke-ScriptAnalyzer -Path ./src, ./scripts -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          $r | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 220 | Write-Host
+          foreach ($i in $r) {
+            $level = if ($i.Severity -eq 'Error') { 'error' } else { 'warning' }
+            Write-Host "::$level file=$($i.ScriptPath),line=$($i.Line)::$($i.RuleName): $($i.Message -replace "`r?`n", ' ')"
+          }
+          if (@($r | Where-Object Severity -eq 'Error').Count -gt 0) { exit 1 }
+
+  yaml:
+    name: YAML syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse pipeline and workflow files
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          files = glob.glob('*.yml') + glob.glob('pipelines/**/*.yml', recursive=True) + glob.glob('.github/workflows/*.yml')
+          bad = 0
+          for f in files:
+              try:
+                  yaml.safe_load(open(f, encoding='utf-8'))
+                  print('ok  ', f)
+              except Exception as e:
+                  bad += 1
+                  print('FAIL', f, e)
+          sys.exit(1 if bad else 0)
+          PY
