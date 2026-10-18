@@ -23,23 +23,27 @@ When you open an issue, include:
 scripts/Update-TenantApps.ps1          thin entry point (parameters -> module)
 src/D365TenantAppUpdater/
   D365TenantAppUpdater.psd1            ModuleVersion: the ONLY place the version lives
-  D365TenantAppUpdater.psm1            loads Private/*.ps1 in a fixed order
-  Private/Util.ps1                     small helpers (Get-Count, sorting, ...)
-          Host.ps1                     the ONLY file that knows Azure DevOps vs GitHub
-          Settings.ps1                 defaults and setting resolution
-          Http.ps1                     one HTTP helper (never throws, retries 429/503)
-          Auth.ps1                     client secret and federated sign-in, token cache
-          Versions.ps1                 version compare, F&O version list, release map
-          Discovery.ps1                environments and rings
-          Apps.ps1                     phase 1: collect and decide
-          FinOps.ps1                   phase 2: collect and decide
-          Plan.ps1                     collect -> plan, plan.json
-          Apply.ps1                    execute, re-validate, wait for installs
-          Report.ps1                   console summary, summary.md, report.json
-          Main.ps1                     Invoke-D365TenantAppUpdate
+  D365TenantAppUpdater.psm1            loads the files below in a fixed order
+  Util.ps1                             small helpers (Get-Count, sorting, ...)
+  Host.ps1                             the ONLY file that knows Azure DevOps vs GitHub
+  Settings.ps1                         defaults and setting resolution
+  Http.ps1                             one HTTP helper (never throws, retries GET on 429/503)
+  Auth.ps1                             client secret and federated sign-in, token cache
+  Versions.ps1                         version compare, F&O version list, release map
+  Discovery.ps1                        environments and rings
+  Apps.ps1                             phase 1: collect and decide
+  FinOps.ps1                           phase 2: collect and decide
+  Plan.ps1                             collect -> plan, plan.json
+  Apply.ps1                            execute, re-validate, wait for installs
+  Report.ps1                           results board, summary.md, report.json
+  Main.ps1                             Invoke-D365TenantAppUpdate
 tests/                                 Pester 5 (Unit, Scenario), fake tenant in TestHelpers.ps1
 docs/architecture.md                   diagrams; sources in docs/diagrams, images in docs/images
-pipelines/templates/                   Azure DevOps templates shared by both pipelines
+azure-pipelines.yml                    Azure DevOps pipeline (root: existing pipelines point here)
+sync-from-github.yml                   Azure DevOps sync from GitHub (root: existing pipelines point here)
+pipelines/azure-pipelines-federated.yml   Azure DevOps pipeline without a secret (preview)
+pipelines/templates/stages.yml         the three stages, shared by both Azure DevOps pipelines
+pipelines/templates/run-updater.yml    the steps of one job
 .github/workflows/                     GitHub workflow, CI, release
 ```
 
@@ -69,7 +73,7 @@ No tenant is contacted. `tests/TestHelpers.ps1` describes a fake tenant (`New-Fa
 - Make your change. Keep it focused and small where possible.
 - Add or update a test for it. A bug fix starts with a failing test.
 - Test against a non-production tenant or environment, with `whatIf = true` first.
-- Update the docs, `CHANGELOG.md` (Unreleased section), and `RELEASE_NOTES.md` if relevant.
+- Update the docs and `CHANGELOG.md` (Unreleased section) if relevant.
 - Open the pull request with a clear description of the change and why it helps.
 
 ## Coding style
@@ -151,7 +155,7 @@ Missing a patch is acceptable. Moving an environment further than the operator a
 
 ## Releasing (maintainer)
 
-1. Bump `ModuleVersion` in `src/D365TenantAppUpdater/D365TenantAppUpdater.psd1`, add the version's section to `CHANGELOG.md` and `RELEASE_NOTES.md`, update the README badge, merge to `main`.
+1. Bump `ModuleVersion` in `src/D365TenantAppUpdater/D365TenantAppUpdater.psd1`, add the version's section to `CHANGELOG.md` (a short Highlights part first: it becomes the GitHub release notes), update the README badge, merge to `main`.
 2. Tag and push: `git tag v3.0.0 && git push origin v3.0.0`.
 3. `.github/workflows/release.yml` checks the tag matches the manifest, runs the tests, and publishes the GitHub release with the notes from `CHANGELOG.md` and a zip.
 4. Azure DevOps mirrors using `sync-from-github.yml` pick up the new release on their next sync.

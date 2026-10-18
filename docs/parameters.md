@@ -22,7 +22,7 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 | Azure DevOps | GitHub | Secret | Description |
 |---|---|---|---|
 | `ClientId` | `D365_CLIENT_ID` (variable) | No | Entra ID application (client) id of the service principal. |
-| `ClientSecret` | `D365_CLIENT_SECRET` (secret) | **Yes** | Client secret value. Required in `azure-pipelines.yml`. Optional on GitHub, where OpenID Connect is used and the secret is only the backup. Not used by `azure-pipelines-federated.yml`. |
+| `ClientSecret` | `D365_CLIENT_SECRET` (secret) | **Yes** | Client secret value. Required in `azure-pipelines.yml`. Optional on GitHub, where OpenID Connect is used and the secret is only the backup. Not used by `pipelines/azure-pipelines-federated.yml`. |
 | `TenantId` | `D365_TENANT_ID` (variable) | No | Entra ID directory (tenant) id. |
 
 ## Sign-in (v3)

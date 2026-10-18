@@ -4,7 +4,7 @@ Set-StrictMode -Off
 # Load every private file in a fixed order: later files use earlier ones.
 $script:ModuleRoot = $PSScriptRoot
 foreach ($part in @('Util', 'Host', 'Settings', 'Http', 'Auth', 'Versions', 'Discovery', 'Apps', 'FinOps', 'Plan', 'Apply', 'Report', 'Main')) {
-    . (Join-Path $PSScriptRoot "Private/$part.ps1")
+    . (Join-Path $PSScriptRoot "$part.ps1")
 }
 
 function Get-D365TenantAppUpdaterVersion {

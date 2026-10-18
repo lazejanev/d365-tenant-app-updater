@@ -103,7 +103,7 @@ variables:
     value: 'd365-tenant-app-updater-wif'
 
 stages:
-  - template: pipelines/templates/updater-stages.yml
+  - template: templates/stages.yml
     parameters:
       auth: federated
       serviceConnection: ${{ variables.serviceConnection }}

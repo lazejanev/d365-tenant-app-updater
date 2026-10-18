@@ -1,5 +1,6 @@
 # =====================================================================
-# Stages template: Plan -> Apply non-production -> Apply production.
+# Stages: the whole pipeline. Job steps are in run-updater.yml.
+# Plan -> Apply non-production -> Apply production.
 #
 #   Plan                 reads the tenant, writes plan.json, summary.md and
 #                        report.json (artifact "plan"). Changes nothing.
@@ -48,19 +49,12 @@ stages:
         displayName: 'Read the tenant and plan'
         timeoutInMinutes: 120
         steps:
-          - checkout: self
           - template: run-updater.yml
             parameters:
               mode: Plan
-              stepName: plan
-              displayName: 'Plan updates (changes nothing)'
-              outputDirectory: '$(Build.ArtifactStagingDirectory)/plan'
+              artifact: plan
               auth: ${{ parameters.auth }}
               serviceConnection: ${{ parameters.serviceConnection }}
-          - publish: '$(Build.ArtifactStagingDirectory)/plan'
-            artifact: plan
-            displayName: 'Publish plan and reports'
-            condition: succeededOrFailed()
 
   - stage: ApplyNonProduction
     displayName: 'Apply: non-production'
@@ -74,9 +68,12 @@ stages:
         displayName: 'Apply non-production actions'
         timeoutInMinutes: 180
         steps:
-          - template: apply-steps.yml
+          - template: run-updater.yml
             parameters:
+              mode: Apply
               ring: NonProduction
+              artifact: apply-nonproduction
+              planFile: '$(Pipeline.Workspace)/plan/plan.json'
               auth: ${{ parameters.auth }}
               serviceConnection: ${{ parameters.serviceConnection }}
               usePacFallback: ${{ parameters.usePacFallback }}
@@ -96,9 +93,12 @@ stages:
           displayName: 'Apply production actions'
           timeoutInMinutes: 180
           steps:
-            - template: apply-steps.yml
+            - template: run-updater.yml
               parameters:
+                mode: Apply
                 ring: Production
+                artifact: apply-production
+                planFile: '$(Pipeline.Workspace)/plan/plan.json'
                 auth: ${{ parameters.auth }}
                 serviceConnection: ${{ parameters.serviceConnection }}
                 usePacFallback: ${{ parameters.usePacFallback }}
@@ -111,9 +111,12 @@ stages:
             runOnce:
               deploy:
                 steps:
-                  - template: apply-steps.yml
+                  - template: run-updater.yml
                     parameters:
+                      mode: Apply
                       ring: Production
+                      artifact: apply-production
+                      planFile: '$(Pipeline.Workspace)/plan/plan.json'
                       auth: ${{ parameters.auth }}
                       serviceConnection: ${{ parameters.serviceConnection }}
                       usePacFallback: ${{ parameters.usePacFallback }}

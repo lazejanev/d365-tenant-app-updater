@@ -20,7 +20,7 @@ v3.0.0 is a major version because **production is now held back by default** and
 
 ## Steps
 
-1. **Get v3.** If you use `sync-from-github.yml`, the next sync brings it. Otherwise copy the release into your repository: `scripts/`, `src/`, `pipelines/`, `azure-pipelines.yml` (and `azure-pipelines-federated.yml` if you want it), `docs/`.
+1. **Get v3.** If you use `sync-from-github.yml`, the next sync brings it. Otherwise copy the release into your repository: `scripts/`, `src/`, `pipelines/`, `azure-pipelines.yml`, `docs/`. (`pipelines/` includes the optional `pipelines/azure-pipelines-federated.yml`.)
    - `scripts/Update-TenantApps.ps1` now loads the module from `src/`. Copying only the script is not enough.
 2. **Keep your pipeline definition.** It points at `azure-pipelines.yml`, which is replaced in place. If you edited it (for example a schedule), re-apply your edit to the new file: the `schedules:` block is in the same place.
 3. **Decide on production.** With the default production ring, the first v3 runs update non-production only; production follows on the next run once a non-production environment has each version. Check that the ring is what you expect in the first Plan summary: every environment shows `Production` or `NonProduction`.

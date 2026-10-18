@@ -6,7 +6,7 @@ BeforeAll {
 }
 
 Describe 'Azure DevOps pipelines' {
-    It '<File> needs no Azure DevOps environment by default' -ForEach @(@{ File = 'azure-pipelines.yml' }, @{ File = 'azure-pipelines-federated.yml' }) {
+    It '<File> needs no Azure DevOps environment by default' -ForEach @(@{ File = 'azure-pipelines.yml' }, @{ File = 'pipelines/azure-pipelines-federated.yml' }) {
         # Azure DevOps does not create environments for YAML that arrives
         # through a git sync: a default environment name fails every run at
         # queue time ("Environment ... could not be found").
@@ -23,8 +23,24 @@ Describe 'Azure DevOps pipelines' {
         }
     }
 
+    It 'every template reference points to an existing file (<File>)' -ForEach @(
+        @{ File = 'azure-pipelines.yml' }, @{ File = 'pipelines/azure-pipelines-federated.yml' },
+        @{ File = 'pipelines/templates/stages.yml' }, @{ File = 'pipelines/templates/run-updater.yml' }) {
+        # Azure DevOps resolves a template path relative to the file that uses it.
+        $path = Join-Path $global:RepoRoot $File
+        foreach ($m in [regex]::Matches((Get-Content -Raw $path), '(?m)^\s*-\s*template:\s*(\S+)')) {
+            Join-Path (Split-Path $path -Parent) $m.Groups[1].Value | Should -Exist
+        }
+    }
+
+    It 'keeps the root paths existing Azure DevOps pipelines point at' {
+        foreach ($f in 'azure-pipelines.yml', 'sync-from-github.yml', 'scripts/Update-TenantApps.ps1') {
+            Join-Path $global:RepoRoot $f | Should -Exist
+        }
+    }
+
     It 'falls back to a normal job when no approval environment is set' {
-        $t = Get-Content -Raw (Join-Path $global:RepoRoot 'pipelines/templates/updater-stages.yml')
+        $t = Get-Content -Raw (Join-Path $global:RepoRoot 'pipelines/templates/stages.yml')
         $t | Should -Match "if or\(eq\(parameters\.productionApprovalEnvironment, ''\), eq\(parameters\.productionApprovalEnvironment, 'none'\)\)"
         $t | Should -Match '- job: Apply'
     }
