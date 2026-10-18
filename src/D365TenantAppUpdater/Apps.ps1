@@ -22,12 +22,14 @@ function Get-SolutionMap {
     # No $top: it suppresses @odata.nextLink and would silently cap the read.
     $url = "$base/api/data/v9.2/solutions?`$select=uniquename,friendlyname,version,modifiedon&`$filter=ismanaged eq true"
     $map = @{}
+    $script:SolutionsRead = 0
     if ((Get-Count $DumpHints) -gt 0) { Start-Group 'DIAGNOSTIC: managed solutions matching hints (uniquename | friendlyname | version)' }
     while ($url) {
         $r = Invoke-Http -Method 'GET' -Uri $url -Headers (Get-DataverseHeaders -Settings $Settings -InstanceUrl $base)
         if (-not (Test-HttpOk $r)) { throw "Dataverse solutions read failed: $(Format-RestFailure $r)" }
         foreach ($s in @($r.Json.value)) {
             if (-not $s.version) { continue }
+            $script:SolutionsRead++
             $mod = $null
             if ($s.PSObject.Properties['modifiedon'] -and $s.modifiedon) {
                 $d = [datetime]::MinValue
@@ -133,7 +135,7 @@ function Get-AppEnvironmentState {
     #>
     param($Settings, $EnvObj, [bool] $DumpCatalog = $false)
     $state = [pscustomobject]@{
-        Env = $EnvObj; Packages = @(); FinOpsMarker = $null; Solutions = $null
+        Env = $EnvObj; Packages = @(); FinOpsMarker = $null; Solutions = $null; SolutionCount = 0
         PackagesError = ''; SolutionsError = ''
     }
     try {
@@ -150,6 +152,7 @@ function Get-AppEnvironmentState {
         $hints = @()
         if ($DumpCatalog) { $hints = $script:CatalogDumpHints }
         $state.Solutions = Get-SolutionMap -Settings $Settings -InstanceUrl $EnvObj.InstanceUrl -DumpHints $hints
+        $state.SolutionCount = $script:SolutionsRead
     }
     catch { $state.SolutionsError = Get-ErrorText $_ }
     return $state

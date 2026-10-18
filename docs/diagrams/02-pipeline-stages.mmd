@@ -1,10 +1,10 @@
 flowchart LR
     T(["Manual run or<br/>nightly schedule"]) --> P["<b>Stage 1 · Plan</b><br/>read the whole tenant<br/>decide every update<br/>changes nothing"]
     P --> ART[("plan.json<br/>summary.md<br/>report.json")]
-    ART -- "if non-production<br/>actions" --> NP["<b>Stage 2 · Apply<br/>non-production</b><br/>re-check, install / apply,<br/>wait for app installs"]
+    ART -- "if non-production<br/>actions" --> NP["<b>Stage 2 · Apply<br/>non-production</b><br/>re-check, then trigger<br/>install / apply"]
     NP --> GATE{{"Optional approval<br/>(only if configured)"}}
     ART -. "if production actions<br/>(already proven)" .-> GATE
-    GATE --> PR["<b>Stage 3 · Apply<br/>production</b><br/>re-check, install / apply,<br/>wait for app installs"]
+    GATE --> PR["<b>Stage 3 · Apply<br/>production</b><br/>re-check, then trigger<br/>install / apply"]
     PR --> DONE(["Summary on<br/>the run page"])
     classDef plan fill:#eef4ff,stroke:#3b6fd8,color:#16325c
     classDef np fill:#eaf7ee,stroke:#2f9e58,color:#14532d

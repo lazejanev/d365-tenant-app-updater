@@ -60,7 +60,7 @@ Tokens are cached per API and renewed five minutes before they expire, so long r
 | `environmentFilter` | (blank = all) | Allow-list of environment names/ids to process. |
 | `environmentExclude` | (blank = none) | Deny-list of environment names/ids to always skip. |
 | `appExclude` | (blank) | Deny-list of app names/ids to always skip. Exact names or `*` wildcards. Partial (substring) matches still work but are deprecated, see [App scoping](#app-scoping-appexclude). |
-| `waitForInstallsMinutes` **(v3)** | `30` | After triggering app installs, wait up to this many minutes for them to finish and report each outcome (succeeded, failed, still running). `0` = do not wait, as in v2. F&O version applies run for hours and are verified by the next run. |
+| `waitForInstallsMinutes` **(v3)** | `0` | `0` (default): trigger the app installs and move on, as in v2; the next run reports the outcome. A number of minutes: wait up to that long for the installs to finish and report each one in the same run (succeeded, failed, still running), with a progress line every minute. F&O version applies run for hours and are always verified by the next run. |
 | `failOnIssues` **(v3)** | `false` | When something could not be read or an install failed, the run ends "with issues": orange on Azure DevOps, green with warning annotations on GitHub. Set `true` to fail the run (exit code 1, red) instead, for example to trigger a failure notification. The **Plan** stage is never failed by it, so one unreadable environment does not stop the applies for every other environment: the Apply stages (and PlanAndApply runs) fail instead, and only for problems in their own actions. |
 
 ### Production ring (v3)

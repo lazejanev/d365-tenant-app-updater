@@ -51,7 +51,7 @@ Describe 'Plan mode' {
             $lines = Get-Content $out
             $lines | Should -Contain 'hasNonProductionActions=true'
             $lines | Should -Contain 'hasProductionActions=false'
-            (Get-Content $sum -Raw) | Should -Match 'd365-tenant-app-updater 3\.0\.0'
+            (Get-Content $sum -Raw) | Should -Match 'd365-tenant-app-updater 3\.0\.\d+'
         }
         finally { $env:GITHUB_OUTPUT = $null; $env:GITHUB_STEP_SUMMARY = $null }
     }

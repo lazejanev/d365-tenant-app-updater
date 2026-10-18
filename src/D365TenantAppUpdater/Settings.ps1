@@ -33,7 +33,7 @@ $script:Defaults = [ordered]@{
     ProductionEnvironmentTypes = 'Production'
     ProductionEnvironments     = ''
     ProductionSoakDays         = '0'
-    WaitForInstallsMinutes     = '30'
+    WaitForInstallsMinutes     = '0'
     FailOnIssues               = 'false'
     AuthMode                   = 'Auto'
     ServiceConnectionId        = ''
@@ -105,8 +105,8 @@ function Get-RunSettings {
 
     $soak = 0
     if (-not [int]::TryParse($raw.ProductionSoakDays, [ref]$soak) -or $soak -lt 0) { $warnings += "productionSoakDays '$($raw.ProductionSoakDays)' is not a whole number of days. Using 0."; $soak = 0 }
-    $wait = 30
-    if (-not [int]::TryParse($raw.WaitForInstallsMinutes, [ref]$wait) -or $wait -lt 0) { $warnings += "waitForInstallsMinutes '$($raw.WaitForInstallsMinutes)' is not a whole number of minutes. Using 30."; $wait = 30 }
+    $wait = 0
+    if (-not [int]::TryParse($raw.WaitForInstallsMinutes, [ref]$wait) -or $wait -lt 0) { $warnings += "waitForInstallsMinutes '$($raw.WaitForInstallsMinutes)' is not a whole number of minutes. Using 0 (do not wait)."; $wait = 0 }
 
     # Safety switches: a typo keeps the safe value (ring on, plan only, no
     # F&O apply) instead of silently picking the unsafe one.

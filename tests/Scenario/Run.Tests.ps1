@@ -50,6 +50,27 @@ Describe 'Ordering (A to Z)' {
     }
 }
 
+Describe 'Progress while reading' {
+    BeforeEach {
+        Reset-TestModuleState
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { Invoke-FakeRequest @PesterBoundParameters }
+    }
+
+    It 'prints one line per environment, A to Z, with what was read' {
+        Set-FakeTenant -Environments @(
+            (New-FakeEnv -Id 'b' -Name 'Beta' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'), (New-FakeApp 'msdyn_b' 'B' '1.0' '1.0'))),
+            (New-FakeEnv -Id 'a' -Name 'Alpha' -FinOpsBuild '10.0.2645.136'),
+            (New-FakeEnv -Id 'c' -Name 'Gamma' -SolutionsStatus 403)
+        )
+        $r = Invoke-TestRun -Mode Plan
+        $r.Output | Should -Match 'READING 3 ENVIRONMENT\(S\)'
+        $r.Output | Should -Match '1/3  Alpha  1 installed apps, 1 solutions, F&O \(\d+s\)'
+        $r.Output | Should -Match '2/3  Beta  2 installed apps, 2 solutions \(\d+s\)'
+        $r.Output | Should -Match '3/3  Gamma  installed solutions could not be read'
+        $r.Output | Should -Match '1/1  Alpha  10\.0\.2645\.136 \[10\.0\.48\]'
+    }
+}
+
 Describe 'Discovery and sign-in' {
     BeforeEach {
         Reset-TestModuleState
@@ -241,6 +262,20 @@ Describe 'Waiting for app installs' {
         $r.Report.results[0].Result | Should -Be $Expected
         $r.Report.result | Should -Be $Result
         @(Get-FakeCalls 'GET */operations/op-msdyn_a*').Count | Should -BeGreaterThan 0
+    }
+
+    It 'prints a progress line every minute while waiting' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0')) -OperationStatus 'Running'))
+        $r = Invoke-TestRun -Setting @{ WaitForInstallsMinutes = '5' }
+        $r.Output | Should -Match '1 install\(s\) still running · \d+ of 5 min'
+    }
+
+    It 'does not wait by default: installs are triggered and the next run reports them' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))))
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
+        $null = Invoke-D365TenantAppUpdate -ClientId c -ClientSecret s -TenantId t -OutputDirectory $dir -Setting @{ DumpDiagnostics = 'false' } 6>$null
+        @(Get-FakeCalls 'POST */install*') | Should -HaveCount 1
+        @(Get-FakeCalls 'GET */operations/*') | Should -HaveCount 0
     }
 
     It 'does not poll when waitForInstallsMinutes = 0' {

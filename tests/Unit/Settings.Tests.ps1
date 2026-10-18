@@ -13,7 +13,7 @@ Describe 'Settings' {
             $s.ProductionEnvironmentTypes | Should -Be @('Production')
             $s.FinOpsApplyVersion | Should -BeFalse
             $s.FinOpsUpdateScope | Should -Be 'QualityUpdate'
-            $s.WaitForInstallsMinutes | Should -Be 30
+            $s.WaitForInstallsMinutes | Should -Be 0
             $s.AuthMode | Should -Be 'Auto'
             $s.Authority | Should -Be 'https://login.microsoftonline.com/t/oauth2/v2.0/token'
             $s.Warnings | Should -HaveCount 0
@@ -53,7 +53,7 @@ Describe 'Settings' {
             $s.FinOpsUpdateScope | Should -Be 'QualityUpdate'
             $s.AuthMode | Should -Be 'Auto'
             $s.ProductionSoakDays | Should -Be 0
-            $s.WaitForInstallsMinutes | Should -Be 30
+            $s.WaitForInstallsMinutes | Should -Be 0
             $s.Warnings | Should -HaveCount 4
         }
     }

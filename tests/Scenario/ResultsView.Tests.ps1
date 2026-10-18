@@ -65,7 +65,7 @@ Describe 'Run summary (summary.md)' {
     It 'starts with the result and the counters' {
         New-MixedTenant
         $r = Invoke-TestRun -Setting @{ WaitForInstallsMinutes = '5' }
-        $r.Summary | Should -Match '## ⚠️ d365-tenant-app-updater 3\.0\.0 · SucceededWithIssues'
+        $r.Summary | Should -Match '## ⚠️ d365-tenant-app-updater 3\.0\.\d+ · SucceededWithIssues'
         $r.Summary | Should -Match '\| \*\*1\*\* \| \*\*0\*\* \| \*\*0\*\* \| \*\*1\*\* \| \*\*0\*\* \| \*\*1\*\* \| \*\*1\*\* \|'
         $r.Report.counts.Updated | Should -Be 1
         $r.Report.counts.Held | Should -Be 1

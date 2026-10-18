@@ -38,11 +38,11 @@ Non-production environments update as soon as something is available, so you tes
 - **Plan, then apply.** Three stages: Plan (changes nothing), Apply non-production, Apply production. Optional approval on production.
 - **GitHub Actions**, alongside Azure DevOps. Same module, same rules.
 - **No client secret needed.** OpenID Connect on GitHub, workload identity federation on Azure DevOps (preview). The secret still works, and is the backup.
-- **You see the outcome.** App installs are followed and reported; every run publishes a summary on the run page.
+- **You see the outcome.** Every run publishes a summary on the run page; installs triggered by one run are reported by the next.
 - **A to Z.** Environments and apps are processed and reported alphabetically, numbers in numeric order (Dev2 before Dev10), the same on every agent.
 - **A results board.** The log ends with one colour-coded line per app, grouped by environment; the run page shows the same with counters.
 - **Architecture diagrams.** [docs/architecture.md](docs/architecture.md).
-- **Tested.** 138 automated tests on every change, no tenant required.
+- **Tested.** 141 automated tests on every change, no tenant required.
 
 Full list: [CHANGELOG.md](CHANGELOG.md).
 
@@ -53,7 +53,7 @@ Full list: [CHANGELOG.md](CHANGELOG.md).
 ![Pipeline stages](docs/images/02-pipeline-stages.svg)
 
 1. **Plan** (changes nothing). Sign in (client secret, or federated: GitHub OIDC / Azure DevOps). List every environment, keep the Dataverse-linked ones, apply `environmentFilter` / `environmentExclude`, sort A to Z, and tag each one Production or NonProduction. For each environment, read the available apps (App Management API), the installed versions (Dataverse managed solutions) and, where F&O is installed, the live build, offered versions and maintenance window. Then decide every app and F&O update, including the production ring.
-2. **Apply non-production**, then **Apply production**. Re-check each action against the live tenant and the current settings, install or apply, and wait for app installs.
+2. **Apply non-production**, then **Apply production**. Re-check each action against the live tenant and the current settings, and trigger the install or apply. The next run reports the outcome.
 3. **Report**. The results board in the log, `summary.md` on the run page, `report.json` and `plan.json` as artifacts.
 
 How each decision is made, the module layout and the sign-in flow: [docs/architecture.md](docs/architecture.md).
@@ -114,7 +114,7 @@ The most used settings:
 | `productionSoakDays` | `0` | Apps: how long non-production must run a version before production gets it. |
 | `environmentFilter` / `environmentExclude` | (all) / (none) | Which environments are in scope. |
 | `appExclude` | (blank) | Apps to always skip (exact names or `*` wildcards). |
-| `waitForInstallsMinutes` | `30` | How long to follow app installs. `0` = do not wait. |
+| `waitForInstallsMinutes` | `0` | `0` = trigger installs and move on; the next run reports the outcome. Set minutes to wait and report each install in the same run. |
 | `finOpsApplyVersion` | `false` | **The only F&O on/off switch.** Changes environments when true. |
 | `finOpsUpdateScope` | `QualityUpdate` | `QualityUpdate` (PQU on the current release), `VersionUpdate` (next release only), `Any`. |
 | `authMode` | `Auto` | `Auto` (federated when available, secret as backup), `Federated`, `ClientSecret`. |
