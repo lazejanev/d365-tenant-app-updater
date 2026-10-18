@@ -45,6 +45,7 @@ The pipeline needs only three variables to run. Everything else has a built-in d
   - `environmentExclude = Production` (protect production)
   - `finOpsApplyVersion = true` (enable F&O version apply; **changes environments**)
   - `finOpsUpdateScope = VersionUpdate` (opt into the next release train instead of the default PQU on the current train)
+  - `finOpsBuildTrainMap = 10.0.2900=50` (only when Microsoft ships a release newer than 10.0.49; see section 6)
 - Save.
 
 There is no `pipelineName`, `agentVmImage`, or endpoint variable to set. The run name and agent image are fixed in the YAML, and all API endpoints and versions are script defaults you can override only if you ever need to.
@@ -80,12 +81,12 @@ There is a single on/off variable, `finOpsApplyVersion` (default `false`), plus 
 No configuration needed. It runs on every pipeline execution, for every environment where Finance and Operations is installed, regardless of `finOpsApplyVersion`. Per environment, the log shows one compact line, for example:
 
 ```
-Dev04: 10.0.2645.136 (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
+Dev04: 10.0.2645.136 [10.0.48] (UnifiedDeveloper) - no PQU version available for 10.0.48. New version available: 10.0.49.3 [Status: QualityUpdate]
 ```
 
 > The environment name above is an illustrative placeholder. Your own log will show your actual environment display names.
 
-Expand the environment's collapsible group to see additional detail: AOS counts, demo dataset, the F&O Provisioning App Anchor Solution version, and the **Current train** derived from it.
+The `[10.0.48]` is the release train of the live build. Expand the environment's collapsible group to see additional detail: AOS counts, demo dataset, and the **Current train** with the build prefix it came from.
 
 ### Version apply (opt-in, changes environments)
 
@@ -103,9 +104,9 @@ Run with **Plan only** set to `true` first.
 
 Microsoft's `releaseStage` alone is not enough: it describes the build itself, so a quality update on a newer train (for example 10.0.49.3) is also staged `QualityUpdate`. That is why the train check exists.
 
-The environment's current train is the 3rd segment of the F&O Provisioning App Anchor Solution version. If it cannot be determined, the apply is **skipped** unless the scope is `Any`.
+The environment's current train comes from its **live application build** (see below). If it cannot be determined, the apply is **skipped** unless the scope is `Any`.
 
-In every scope, a version at or below the Anchor Solution version is never applied (see below).
+In every scope, a version on a lower train than the live build is never applied.
 
 Optional refinements, all inert unless `finOpsApplyVersion = true`:
 
@@ -113,20 +114,28 @@ Optional refinements, all inert unless `finOpsApplyVersion = true`:
 - `finOpsTargetVersion` - apply a specific version instead of the highest matching scope.
 - `finOpsDeploymentTypes` - control which deployment types are eligible for a version apply. The default excludes LCS managed environments.
 
-### The F&O Provisioning App Anchor Solution: what is used and what is not
+### Where the release train comes from, and keeping the map current
 
-The Anchor Solution's version in Dataverse is only updated by Dataverse-level solution operations (for example an environment copy from an already-updated source). Microsoft's automated Unified environment update rollout does not always update it. Multiple environments on the identical live build have shown different Anchor Solution **patch digits**.
+The script reads `applicationVersion` from `finopsproperties` on every run (for example `10.0.2645.136`) and maps its build prefix to a release train. Every PQU of a release shares one prefix. The built-in map covers 10.0.46 (`10.0.2428`), 10.0.47 (`10.0.2527`), 10.0.48 (`10.0.2645`) and 10.0.49 (`10.0.2790`), taken from Microsoft's [release schedule for proactive quality updates](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule).
 
-So the script uses the **release train** from that version (the `48` in `10.0.48.6`) to decide scope, and never uses the patch digit to select or accept a version. If an environment has moved to a new train but its Anchor Solution still shows the old train, `QualityUpdate` will skip it rather than guess. Check the "Current train" line in the diagnostic detail if an environment is skipped unexpectedly.
+**When Microsoft ships a new release** (roughly once a quarter):
 
-The one thing the full version is used for is a **lower bound**. The Anchor Solution lags the live build but never runs ahead of it, so a version at or below it cannot be an upgrade and is never applied, in any scope. That check can only stop an apply, never cause one.
+1. Open that page and find the new release's first PQU row. Note the build prefix in the "Application Version" column, for example `10.0.2900` from `10.0.2900.75`.
+2. Add `finOpsBuildTrainMap = 10.0.2900=50` to the `D365-TenantAppUpdater` variable group. Separate several entries with commas.
+3. The next run prints the effective map under **Effective settings**.
+
+Until a release is added, environments on it are skipped with a log line naming the prefix to add. Nothing is guessed.
+
+### Why the F&O Provisioning App Anchor Solution is not used
+
+Microsoft has confirmed that the Anchor Solution's version in Dataverse is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API that this pipeline uses. After the first apply through this pipeline it is permanently stale. v2.4.2 read the release train from it, so environments it had already updated were misread. The script now uses the Anchor Solution only to detect that F&O is installed, never its version.
 
 ### Upgrading from v2.4.0, v2.4.1 or v2.4.2
 
 - **v2.4.0 and v2.4.1** decided scope from `releaseStage` alone, so `QualityUpdate` could move environments to a new release train.
-- **v2.4.2** fixed that, but `VersionUpdate` could still jump several trains or pick a non-released build, nothing stopped a version at or below the Anchor Solution, and a bare multi-version response was reported as "no versions listed".
+- **v2.4.2** fixed that, but read the train from the Anchor Solution, which goes stale after the first apply through this pipeline. Its `VersionUpdate` could also jump several trains or pick a non-released build, and a bare multi-version response was reported as "no versions listed".
 
-Replace `scripts/Update-TenantApps.ps1` with v2.4.3 before running with `finOpsApplyVersion = true`. No variable changes are needed. Run once with **Plan only** set to `true`: environments that previously showed "no versions listed" may now show real versions.
+Replace `scripts/Update-TenantApps.ps1` with v2.4.3 before running with `finOpsApplyVersion = true`. No variable changes are needed for releases 10.0.46 to 10.0.49. Run once with **Plan only** set to `true` and check the `[10.0.xx]` train on each environment line: environments that previously showed "no versions listed" or were skipped may now show a planned apply.
 
 ### If you have `updateFinOpsVersion` or `finOpsInventory` from an earlier version
 
@@ -166,10 +175,9 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 | `finopsversions returned HTTP 404 RouteNotFound` | Expected, intermittent platform behaviour | Re-run. See section 6. Not a permissions or config issue. |
 | "no PQU version available for 10.0.xx" | No quality update exists yet on the environment's current release train | Expected. Switch `finOpsUpdateScope` to `VersionUpdate` if you want the next release train. |
 | "no version update (next train) available for 10.0.xx" | Nothing released is offered on the next train, or only a later train is offered | Expected. For a deliberate multi-train move, use `Any` with an explicit `finOpsTargetVersion`. |
-| "no eligible version newer than the Anchor Solution" | Every matching version is at or below the Anchor Solution version, so none can be an upgrade | Expected. Nothing to apply. |
-| "Dataverse solution read failed earlier in this run, apply skipped" | The service principal could not read that environment's Dataverse | Add the app user with a security role. Inventory still runs. |
-| "current release train unknown, apply skipped" | The Anchor Solution version is missing or not in `10.0.x.y` form | Check the diagnostic detail. Use `Any` only if you accept no train check. |
-| An environment on a new train keeps getting skipped | Its Anchor Solution still shows the previous train | Known limitation. Verify the version in PPAC; the script fails safe. |
+| "current release train unknown (build prefix 10.0.xxxx is not in the build -> train map ...)" | The environment is on a release the map does not know yet | Add the prefix to `finOpsBuildTrainMap`, e.g. `10.0.2900=50`. See section 6. |
+| "current release train unknown (no application version reported)" | `finopsproperties` returned no `applicationVersion` | Re-run. If it persists, check the environment in PPAC. |
+| "every listed version is on a lower train than 10.0.xx" | The list only had versions older than the live build | Expected. Nothing to apply. |
 | Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v2.4.3. |
 | "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v2.4.3. |
 | F&O phase skipped with a PowerShell version warning | Running under Windows PowerShell 5.1 | Use `pwsh: true` in the task, or PowerShell 7 locally |

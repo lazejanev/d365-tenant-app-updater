@@ -67,21 +67,20 @@ An earlier build stopped probing after the first `RouteNotFound` and assumed eve
 
 `finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. Do not add a second variable, alias, or combined switch that can also turn it on.
 
-### 6. The Anchor Solution may only narrow an apply, never widen it
+### 6. Never use the Anchor Solution version for an F&O decision
 
-The F&O Provisioning App Anchor Solution version in Dataverse is not updated by every update path. Multiple environments on the identical live build have shown different patch digits. It lags the live build but never runs ahead of it. So:
+Microsoft has confirmed that the F&O Provisioning App Anchor Solution version in Dataverse is only updated when an update runs from Lifecycle Services, not from PPAC or the Power Platform API. This pipeline updates through the API, so after its first apply the value is permanently stale. v2.4.2 read the release train from it and misread every environment it had already updated.
 
-- its **release train** (3rd segment) decides which train a scope refers to;
-- its **full version** may be used only as a **lower bound** that refuses an apply (the never-older guard);
-- its **patch digit** must never be used to select or accept a version.
+The Anchor Solution may be used to **detect** that F&O is installed (presence). Its **version** must not be used for anything: not the train, not a guard, not a label.
 
-Any new use of it must only ever be able to stop an apply, not cause one.
+The current release train comes from the **live application build** (`applicationVersion` from `finopsproperties`) through the build-prefix map. When adding a release to the built-in map, take the prefix from Microsoft's [PQU release schedule](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule) ("Application Version" column) and cite it in the commit.
 
 ### 7. An update scope must fail safe
 
 `QualityUpdate` once moved ten environments from 10.0.48 to 10.0.49, because the scope relied on `releaseStage` alone. Any rule that limits how far an apply may go must:
 
 - check every condition the scope promises (here: stage **and** release train),
+- take its inputs from **live** state the platform reports on every run, not from a record that only some update paths maintain,
 - bound how far it can move (`VersionUpdate` moves one train at a time, released stages only),
 - **skip** the apply when a required input is missing or unparseable, rather than fall back to a wider selection, and
 - never rely on the platform to refuse a bad request (for example a downgrade) unless that behaviour has been verified live.
@@ -115,7 +114,7 @@ assert not (params & assigns)
 assert s.rstrip().endswith('exit 0')
 ```
 
-Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version **at or below** the Anchor Solution; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
+Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version on a **lower** train than the live build; an **unknown** build prefix; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
 
 **Always run with `whatIf = true` first.**
 

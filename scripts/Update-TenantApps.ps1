@@ -28,16 +28,29 @@
 
 .NOTES
     v2.4.3
+      - The Anchor Solution is NO LONGER USED for any F&O decision. Microsoft
+        confirmed it is only updated when an update runs from LCS, not from
+        PPAC or the Power Platform API - the path this script uses. After
+        the first apply by this pipeline it is permanently stale (the
+        environments moved to 10.0.49.3 in the v2.4.1 incident still read
+        10.0.48), so v2.4.2's train detection misread every environment it
+        had updated. The Anchor is still used to DETECT that F&O is
+        installed (presence only, never its version).
+      - The current release train now comes from the LIVE application
+        build (applicationVersion from finopsproperties, e.g. 10.0.2645.136)
+        mapped by its build prefix (10.0.2645 -> 10.0.48). Built-in map from
+        Microsoft's PQU release schedule; extend it with FinOpsBuildTrainMap
+        when a new release ships. An unknown build skips the apply and logs
+        the exact prefix to add (fail-safe, unless scope is Any).
+      - Lower-train guard (every scope): a version on a LOWER train than the
+        live build is never applied. Microsoft documents that the version
+        list only offers versions later than the installed one; this check
+        enforces the part the script can verify itself.
       - Version list parsing fixed. When finopsversions returned a bare JSON
         array with two or more entries, every entry was lost and the
         environment was reported as "no versions listed" (PowerShell member
         enumeration on the array). Single-entry and {"value": [...]}
         responses were unaffected.
-      - Never-older guard. The Anchor Solution version lags the live build
-        but never leads it, so it is a LOWER BOUND on what is running. A
-        target at or below the Anchor version cannot be an upgrade and is
-        skipped before any apply call. The script no longer relies on the
-        apply endpoint to refuse a downgrade (that was never verified).
       - VersionUpdate is bounded. It now selects only the NEXT release train
         (current + 1), and only versions staged GeneralAvailability or
         QualityUpdate. It can no longer jump several trains in one run or
@@ -48,8 +61,8 @@
         fallback ignores virtual entity, dual-write and package manager
         apps.
       - An F&O environment whose Dataverse solution read fails is still
-        detected and inventoried (train unknown, so apply is skipped
-        unless scope is Any) instead of silently disappearing.
+        detected and processed instead of silently disappearing (the F&O
+        phase no longer needs anything from Dataverse).
       - Dataverse solution query no longer uses $top, which disabled
         paging. Tokens are refreshed after 45 minutes on long runs. An
         install accepted without an operation id now counts as triggered.
@@ -77,6 +90,8 @@
         Anchor Solution still shows the old train, QualityUpdate will
         skip that environment (no update) rather than guess. This fails
         safe: it can miss a patch, it can never jump a release.
+        (Superseded in v2.4.3: the Anchor is only updated by LCS updates,
+        so the train now comes from the live application build.)
 
     v2.4.1
       - Wording only: "PQU" / "version update" labels, "[Status: x]"
@@ -141,7 +156,11 @@ param(
     #   QualityUpdate (default) - releaseStage QualityUpdate AND same release train
     #   VersionUpdate           - the NEXT release train only, released stages only
     #   Any                     - numerically highest, ignoring stage and train
-    [Parameter()] [string] $FinOpsUpdateScope       = ''
+    [Parameter()] [string] $FinOpsUpdateScope       = '',
+
+    # Extra build-prefix -> release-train entries, added to (and overriding)
+    # the built-in map. Format: '10.0.2790=49, 10.0.2900=50'.
+    [Parameter()] [string] $FinOpsBuildTrainMap     = ''
 )
 
 Set-StrictMode -Off
@@ -167,6 +186,20 @@ $Defaults = @{
     FinOpsEnvironmentFilter = ''
     FinOpsDeploymentTypes   = 'UnifiedDeveloper,UnifiedSandbox,UnifiedProduction'
     FinOpsUpdateScope       = 'QualityUpdate'
+    FinOpsBuildTrainMap     = ''
+}
+
+# Live application build prefix -> F&O release train.
+# Source: Microsoft's "Release schedule for proactive quality updates"
+# (https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule),
+# column "Application Version". Every PQU of a release shares the build
+# prefix, e.g. 10.0.48 PQU-1..PQU-8 are 10.0.2645.81 .. 10.0.2645.158.
+# Add new releases with the FinOpsBuildTrainMap variable; no code change.
+$FinOpsBuildTrainBuiltIn = [ordered]@{
+    '10.0.2428' = 46
+    '10.0.2527' = 47
+    '10.0.2645' = 48
+    '10.0.2790' = 49
 }
 
 $FinOpsUpdateScopeValues = @('QualityUpdate','VersionUpdate','Any')
@@ -274,6 +307,8 @@ $optDoApply = ConvertTo-Bool (Resolve-Overridable $FinOpsApplyVersion 'FinOpsApp
 $optFinOpsTarget   = Resolve-Overridable $FinOpsTargetVersion 'FinOpsTargetVersionOverride' 'FinOpsTargetVersion' $Defaults.FinOpsTargetVersion
 $optFinOpsEnvList  = Resolve-Setting     $FinOpsEnvironmentFilter 'FinOpsEnvironmentFilter' $Defaults.FinOpsEnvironmentFilter
 $optFinOpsDepTypes = Resolve-Setting     $FinOpsDeploymentTypes   'FinOpsDeploymentTypes'   $Defaults.FinOpsDeploymentTypes
+
+$optFinOpsBuildMapRaw = Resolve-Setting $FinOpsBuildTrainMap 'FinOpsBuildTrainMap' $Defaults.FinOpsBuildTrainMap
 
 $optFinOpsScopeRaw = Resolve-Overridable $FinOpsUpdateScope 'FinOpsUpdateScopeOverride' 'FinOpsUpdateScope' $Defaults.FinOpsUpdateScope
 $optFinOpsScope    = $Defaults.FinOpsUpdateScope
@@ -591,9 +626,35 @@ function ConvertTo-FinOpsVersionList {
     return $out
 }
 
+# Builds the build-prefix -> train map: the built-in entries, then the
+# FinOpsBuildTrainMap entries ('10.0.2790=49, 10.0.2900=50') on top.
+# Returns @{ Map = <hashtable>; Invalid = <entries that did not parse> }.
+function ConvertTo-FinOpsBuildTrainMap {
+    param($BuiltIn, [AllowEmptyString()] [string] $Extra)
+    $map = @{}
+    foreach ($k in $BuiltIn.Keys) { $map[[string]$k] = [int]$BuiltIn[$k] }
+    $invalid = @()
+    foreach ($entry in (Split-List $Extra)) {
+        if ($entry -match '^\s*(\d+\.\d+\.\d+)\s*=\s*(?:10\.0\.)?(\d+)\s*$') { $map[$Matches[1]] = [int]$Matches[2] }
+        else { $invalid += $entry }
+    }
+    return @{ Map = $map; Invalid = $invalid }
+}
+
+# Live release train from the live application build (applicationVersion
+# from finopsproperties, e.g. 10.0.2645.136 -> prefix 10.0.2645 -> 48).
+# Returns @{ Train = <int or $null>; Prefix = <string or ''> }.
+function Get-FinOpsLiveTrain {
+    param([AllowEmptyString()] [string] $AppVersion, [hashtable] $Map)
+    if ($AppVersion -notmatch '^\s*(\d+\.\d+\.\d+)\.\d+') { return @{ Train = $null; Prefix = '' } }
+    $prefix = $Matches[1]
+    if ($Map.ContainsKey($prefix)) { return @{ Train = [int]$Map[$prefix]; Prefix = $prefix } }
+    return @{ Train = $null; Prefix = $prefix }
+}
+
 # Release train = 3rd segment of a release-scheme version (48 in 10.0.48.7).
-# Returns $null when the version is not in the 10.0.<train>.<patch> shape
-# (for example the 1.0.x anchors seen on LCS environments).
+# Used ONLY on the versions finopsversions offers, never on the Anchor
+# Solution. Returns $null when the version is not 10.0.<train>.<patch>.
 function Get-FinOpsTrain {
     param([AllowEmptyString()] [string] $Version)
     if ([string]::IsNullOrWhiteSpace($Version)) { return $null }
@@ -662,6 +723,8 @@ $excludeList = Split-List $optEnvExclude
 $appExcludeL = Split-List $optAppExclude
 $foFilterL   = Split-List $optFinOpsEnvList
 $foDepTypesL = Split-List $optFinOpsDepTypes
+$foBuildMapR = ConvertTo-FinOpsBuildTrainMap -BuiltIn $FinOpsBuildTrainBuiltIn -Extra $optFinOpsBuildMapRaw
+$foBuildMap  = $foBuildMapR.Map
 
 $appSolutionAlias = @{}
 
@@ -684,6 +747,11 @@ if ($optDoApply) {
     Write-Host ("  FinOpsTargetVersion     : " + $tgtLabel)
     Write-Host ("  FinOpsDeploymentTypes   : " + (Format-Scope -Raw $optFinOpsDepTypes -EmptyLabel '(any)'))
     Write-Host ("  FinOpsUpdateScope       : " + $optFinOpsScope)
+}
+$foMapLabel = @($foBuildMap.Keys | Sort-Object | ForEach-Object { $_ + '=10.0.' + $foBuildMap[$_] }) -join ', '
+Write-Host ("  F&O build -> train map  : " + $foMapLabel)
+if ((Get-Count $foBuildMapR.Invalid) -gt 0) {
+    Write-Warning ("finOpsBuildTrainMap entries ignored (expected '10.0.<build>=<train>', e.g. 10.0.2790=49): " + (Join-Names $foBuildMapR.Invalid))
 }
 
 if ((Get-Count $optRetiredVars) -gt 0) {
@@ -745,8 +813,6 @@ $solDumped = $false
 $manualList         = @()
 $adminModeList      = @()
 $finOpsDetected     = @()
-$finOpsAnchorVersions = @{}   # envId -> Anchor Solution version. Its TRAIN scopes the update (v2.4.2); the full version is a lower bound on the live build (v2.4.3).
-$finOpsReadFailed     = @{}   # envId -> $true when the Dataverse read failed. Inventory only, never applied (v2.4.3).
 
 # ===================== PHASE 1: application updates =====================
 foreach ($envObj in $environments) {
@@ -769,7 +835,8 @@ foreach ($envObj in $environments) {
     catch { $totalFailed++; Write-Host "##[warning]Failed to list available packages for '$envName': $_"; continue }
 
     # Detected before the Dataverse read so a failed read cannot hide an F&O
-    # environment from the inventory (v2.4.3).
+    # environment from the F&O phase (v2.4.3). Presence only: the Anchor
+    # Solution's VERSION is never used.
     $foMarkerPkg = Get-FinOpsMarkerPackage -Packages $available
     if ($foMarkerPkg) { $finOpsDetected += $envObj }
 
@@ -784,14 +851,12 @@ foreach ($envObj in $environments) {
         Write-Host "##[warning]Failed to read Dataverse solution versions for '$envName': $_"
         Write-Host '##[warning]Skipping this environment (no installed data => nothing installed blindly).'
         if ($foMarkerPkg) {
-            $finOpsReadFailed[$envId] = $true
-            Write-Host '##[warning]Finance and Operations is still inventoried below, but no version is applied to this environment in this run.'
+            Write-Host 'Finance and Operations detected. It is still processed in the Finance and Operations phase below, which does not use Dataverse.'
         }
         continue
     }
 
     if ($foMarkerPkg) {
-        $finOpsAnchorVersions[$envId] = Resolve-InstalledVersion -Pkg $foMarkerPkg -Map $solMap -Alias $appSolutionAlias
         Write-Host "Finance and Operations detected. Live version and update status are reported in the Finance and Operations phase below."
     }
 
@@ -913,12 +978,13 @@ foreach ($envObj in $environments) {
 #   QualityUpdate = releaseStage QualityUpdate AND same train as current (v2.4.2)
 #   VersionUpdate = the NEXT train (current + 1), released stages only  (v2.4.3)
 #   Any           = no scope restriction
-# The current train comes from the Anchor Solution's 3rd version segment.
-# If it cannot be determined, apply is skipped unless scope is Any.
+# The current train comes from the LIVE application build (applicationVersion
+# from finopsproperties) mapped by build prefix ($foBuildMap). If it cannot
+# be determined, apply is skipped unless scope is Any. The Anchor Solution is
+# never used here: it only changes on LCS updates (v2.4.3).
 #
-# Never-older guard (v2.4.3, every scope): the Anchor Solution lags the live
-# build but never leads it, so its full version is a LOWER BOUND on what is
-# running. A target at or below it is never applied.
+# Lower-train guard (v2.4.3, every scope): a version on a lower train than
+# the live build is never applied.
 
 # Stages VersionUpdate may select. Anything else (preview, early access, or
 # a stage this script has never seen) is excluded.
@@ -961,8 +1027,7 @@ $foNoVersions   = 0
 $foRouteMissing = 0
 $foScopeFiltered = 0
 $foTrainUnknown = 0
-$foNotNewer     = 0
-$foReadFailed   = 0
+$foLowerTrain   = 0
 
 if ($optDoFinOps) {
     try {
@@ -988,7 +1053,7 @@ if ($optDoFinOps) {
                 if ($optFinOpsTarget -ne '') { $tgtLabel = $optFinOpsTarget }
                 Write-Host ("Environments: " + (Get-Count $foTargets) + " | Apply enabled | Scope: " + $optFinOpsScope + " | Target: " + $tgtLabel)
                 Write-Host "PQU (QualityUpdate) = releaseStage QualityUpdate on the SAME release train as the environment (e.g. 10.0.48.x stays on 10.0.48). Version update = the NEXT release train only (e.g. 10.0.48 to 10.0.49), GeneralAvailability or QualityUpdate builds only. If the current train cannot be determined, the apply is skipped."
-                Write-Host "A version at or below the environment's Anchor Solution version is never applied: the Anchor lags the live build, so it is a lower bound."
+                Write-Host "The current release train is read from the live application build (e.g. 10.0.2645.x = 10.0.48), never from the Anchor Solution. A version on a lower train than the live build is never applied."
                 Write-Host "A version is applied only when the apply call itself returns 202; a 204 means the platform confirms nothing is needed."
             }
             else {
@@ -1002,9 +1067,6 @@ if ($optDoFinOps) {
                 catch { Write-Host "##[warning]Token refresh failed, continuing with the current tokens: $(Get-ErrorText -ErrorRecord $_)" }
                 $envNameFo = [string]$envObj.DisplayName
                 $envIdFo   = [string]$envObj.Id
-                $anchorVer = $null
-                if ($finOpsAnchorVersions.ContainsKey($envIdFo)) { $anchorVer = $finOpsAnchorVersions[$envIdFo] }
-                $curTrain  = Get-FinOpsTrain -Version $anchorVer
 
                 $propUri = New-FinOpsUri -EnvironmentId $envIdFo -Leaf 'finopsproperties'
                 $pr = Invoke-PpRest -Method 'GET' -RequestUri $propUri -Headers $ppHeaders
@@ -1032,19 +1094,25 @@ if ($optDoFinOps) {
                     if ($pr.Json.scheduledActions) { $sched = @($pr.Json.scheduledActions) }
                 }
 
+                # Live release train from the live build (v2.4.3).
+                $live      = Get-FinOpsLiveTrain -AppVersion $curVer -Map $foBuildMap
+                $curTrain  = $live.Train
                 $trainLabel = 'unknown'
                 if ($null -ne $curTrain) { $trainLabel = '10.0.' + $curTrain }
+                $curShown = $curVer
+                if ($null -ne $curTrain) { $curShown = $curVer + ' [' + $trainLabel + ']' }
 
                 $diag = @()
                 if ($aosBatch -ne '') { $diag += ('AOS (batch)     : ' + $aosBatch) }
                 if ($demo     -ne '') { $diag += ('Demo dataset    : ' + $demo) }
                 if ((Get-Count $sched) -gt 0) { $diag += ('Scheduled       : ' + (Get-Count $sched)) }
-                if ($anchorVer) { $diag += ('Anchor Solution : ' + $anchorVer + '  (only its release train is used)') }
-                $diag += ('Current train   : ' + $trainLabel)
+                if ($null -ne $curTrain) { $diag += ('Current train   : ' + $trainLabel + '  (from live build prefix ' + $live.Prefix + ')') }
+                elseif ($live.Prefix -ne '') { $diag += ('Current train   : unknown - build prefix ' + $live.Prefix + ' is not in the build -> train map') }
+                else { $diag += ('Current train   : unknown - no application version reported') }
 
                 if (-not $optDoApply) {
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ")") `
+                        -Headline ($curShown + " (" + $depType + ")") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'inventory only'
                     continue
                 }
@@ -1058,18 +1126,9 @@ if ($optDoFinOps) {
                     $foNotEligible++
                     $reason = if ($depType -like 'LCS*') { 'LCS managed' } else { 'deployment type not eligible' }
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ") - skipped, " + $reason + ".") `
+                        -Headline ($curShown + " (" + $depType + ") - skipped, " + $reason + ".") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('version apply skipped (' + $depType + ')')
-                    continue
-                }
-
-                if ($finOpsReadFailed.ContainsKey($envIdFo)) {
-                    $foReadFailed++
-                    Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ") - Dataverse solution read failed earlier in this run, apply skipped (fail-safe).") `
-                        -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
-                        -Note 'Dataverse read failed, apply skipped'
                     continue
                 }
 
@@ -1080,13 +1139,13 @@ if ($optDoFinOps) {
                     if (-not $vr.Transport -and $codeText -eq 'RouteNotFound') {
                         $foRouteMissing++
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " (" + $depType + ") - versions route unavailable (RouteNotFound).") `
+                            -Headline ($curShown + " (" + $depType + ") - versions route unavailable (RouteNotFound).") `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'versions: RouteNotFound'
                     }
                     else {
                         $foFailed++
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " (" + $depType + ") - versions lookup failed: " + (Format-RestFailure -Response $vr)) `
+                            -Headline ($curShown + " (" + $depType + ") - versions lookup failed: " + (Format-RestFailure -Response $vr)) `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                             -Note ('versions: ' + $(if ($vr.Transport) { 'transport failure' } else { 'HTTP ' + $vr.Status }))
                     }
@@ -1097,7 +1156,7 @@ if ($optDoFinOps) {
                 if ((Get-Count $available) -eq 0) {
                     $foNoVersions++
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ") - no versions listed.") `
+                        -Headline ($curShown + " (" + $depType + ") - no versions listed.") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'no versions returned'
                     continue
                 }
@@ -1110,8 +1169,10 @@ if ($optDoFinOps) {
                 if ($optFinOpsScope -ne 'Any') {
                     if ($null -eq $curTrain) {
                         $foTrainUnknown++
+                        $why = 'no application version reported'
+                        if ($live.Prefix -ne '') { $why = "build prefix " + $live.Prefix + " is not in the build -> train map; add it to finOpsBuildTrainMap (e.g. " + $live.Prefix + "=<train>)" }
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " (" + $depType + ") - current release train unknown, apply skipped (fail-safe). New version available: " + $availLabel) `
+                            -Headline ($curShown + " (" + $depType + ") - current release train unknown (" + $why + "), apply skipped (fail-safe). New version available: " + $availLabel) `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                             -Note 'train unknown, apply skipped'
                         continue
@@ -1135,24 +1196,28 @@ if ($optDoFinOps) {
                     $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
                     $scopeWhat  = if ($optFinOpsScope -eq 'VersionUpdate') { 'version update (next train)' } else { $scopeLabel + ' version' }
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " (" + $depType + ") - no " + $scopeWhat + " available for " + $trainLabel + ". New version available: " + $availLabel) `
+                        -Headline ($curShown + " (" + $depType + ") - no " + $scopeWhat + " available for " + $trainLabel + ". New version available: " + $availLabel) `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('no ' + $scopeWhat + ' available')
                     continue
                 }
 
-                # ---------- Never-older guard (v2.4.3, every scope) ----------
-                # Only when the Anchor version is in the 10.0.<train>.<patch>
-                # shape; a 1.0.x anchor (LCS) says nothing about the build.
+                # ---------- Lower-train guard (v2.4.3, every scope) ----------
+                # Never apply a version on a LOWER train than the live build.
+                # Microsoft documents that the list only offers later versions;
+                # this enforces the part the script can verify itself.
                 $guardActive = ($null -ne $curTrain)
                 if ($guardActive) {
-                    $scoped = @($scoped | Where-Object { Test-UpdateAvailable -Available $_.Version -Installed $anchorVer })
+                    $scoped = @($scoped | Where-Object {
+                        $t = Get-FinOpsTrain -Version $_.Version
+                        ($null -eq $t) -or ($t -ge $curTrain)
+                    })
                     if ($optFinOpsTarget -eq '' -and (Get-Count $scoped) -eq 0) {
-                        $foNotNewer++
+                        $foLowerTrain++
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " (" + $depType + ") - no eligible version newer than the Anchor Solution (" + $anchorVer + "), apply skipped. New version available: " + $availLabel) `
+                            -Headline ($curShown + " (" + $depType + ") - every listed version is on a lower train than " + $trainLabel + ", apply skipped. New version available: " + $availLabel) `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
-                            -Note ('not newer than ' + $anchorVer)
+                            -Note ('lower train than ' + $trainLabel)
                         continue
                     }
                 }
@@ -1169,24 +1234,25 @@ if ($optDoFinOps) {
                     if (-not $match) {
                         $foFailed++
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " -> requested '" + $target + "' is not in the available list.") `
+                            -Headline ($curShown + " -> requested '" + $target + "' is not in the available list.") `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt -Note 'target not available'
                         continue
                     }
                     $targetStage = $match.ReleaseStage
-                    if ($guardActive -and -not (Test-UpdateAvailable -Available $target -Installed $anchorVer)) {
-                        $foNotNewer++
+                    $tgtTrain = Get-FinOpsTrain -Version $target
+                    if ($guardActive -and $null -ne $tgtTrain -and $tgtTrain -lt $curTrain) {
+                        $foLowerTrain++
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " -> requested '" + $target + "' is not newer than the Anchor Solution (" + $anchorVer + "), apply skipped.") `
+                            -Headline ($curShown + " -> requested '" + $target + "' is on a lower train than " + $trainLabel + ", apply skipped.") `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
-                            -Note ('target not newer than ' + $anchorVer)
+                            -Note ('target on lower train than ' + $trainLabel)
                         continue
                     }
                     if ($optFinOpsScope -ne 'Any' -and (@($scoped | ForEach-Object { $_.Version }) -notcontains $target)) {
                         $foScopeFiltered++
                         $scopeLabel = Get-FinOpsScopeLabel -Scope $optFinOpsScope
                         Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                            -Headline ($curVer + " -> requested '" + $target + "' [Status: " + $targetStage + "] is not a " + $scopeLabel + " for " + $trainLabel + ".") `
+                            -Headline ($curShown + " -> requested '" + $target + "' [Status: " + $targetStage + "] is not a " + $scopeLabel + " for " + $trainLabel + ".") `
                             -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                             -Note ('target exists but is not a ' + $scopeLabel)
                         continue
@@ -1196,7 +1262,7 @@ if ($optDoFinOps) {
                 if ($optPlanOnly) {
                     $foApplied++
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " -> " + [string]$target + " [Status: " + $targetStage + "] - [WhatIf] would apply.") `
+                        -Headline ($curShown + " -> " + [string]$target + " [Status: " + $targetStage + "] - [WhatIf] would apply.") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('would apply ' + [string]$target + ' [' + $targetStage + ']')
                     continue
@@ -1209,20 +1275,20 @@ if ($optDoFinOps) {
                     $opId = ''
                     if ($ar.Json -and $ar.Json.operationId) { $opId = [string]$ar.Json.operationId }
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " -> " + [string]$target + " [Status: " + $targetStage + "] - accepted, applying (op " + $opId + ").") `
+                        -Headline ($curShown + " -> " + [string]$target + " [Status: " + $targetStage + "] - accepted, applying (op " + $opId + ").") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('applying ' + [string]$target + ' [' + $targetStage + ']')
                 }
                 elseif (-not $ar.Transport -and $ar.Status -eq 204) {
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " -> " + [string]$target + " - platform confirms already at or above (204).") `
+                        -Headline ($curShown + " -> " + [string]$target + " - platform confirms already at or above (204).") `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note 'up to date (204)'
                 }
                 else {
                     $foFailed++
                     Complete-FoEnvironment -EnvName $envNameFo -ShowDiag $optDumpDiag -Diag $diag `
-                        -Headline ($curVer + " -> " + [string]$target + " - apply failed: " + (Format-RestFailure -Response $ar)) `
+                        -Headline ($curShown + " -> " + [string]$target + " - apply failed: " + (Format-RestFailure -Response $ar)) `
                         -Application $curVer -Platform $platVer -Deployment $depType -AOS $aosInt `
                         -Note ('apply: ' + $(if ($ar.Transport) { 'transport failure' } else { 'HTTP ' + $ar.Status }))
                 }
@@ -1268,8 +1334,7 @@ if ($optDoFinOps -and (Get-Count $finOpsDetected) -gt 0) {
         if ($foNoVersions    -gt 0) { Write-Host "  skipped (no versions listed):$foNoVersions" }
         if ($foTrainUnknown  -gt 0) { Write-Host "  skipped (train unknown):     $foTrainUnknown" }
         if ($foScopeFiltered -gt 0) { Write-Host "  skipped (no scope match):    $foScopeFiltered" }
-        if ($foNotNewer      -gt 0) { Write-Host "  skipped (not newer):         $foNotNewer" }
-        if ($foReadFailed    -gt 0) { Write-Host "  skipped (Dataverse read):    $foReadFailed" }
+        if ($foLowerTrain    -gt 0) { Write-Host "  skipped (lower train):       $foLowerTrain" }
         if ($foFailed        -gt 0) { Write-Host "  failed:                      $foFailed" }
     }
     else {
