@@ -1,40 +1,19 @@
-# Secrets and local config - never commit these
-*.secret
-*.secrets
+# Secrets and local overrides - never commit these
 *.env
-.env
 .env.*
-appsettings.local.json
+*.secrets.json
 local.settings.json
-secrets.ps1
-*.pfx
-*.pem
-*.key
 
-# Credentials and tokens
-*token*.json
-*.credentials
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
 
 # PowerShell
 *.ps1xml.bak
 
-# Logs and output
-*.log
-logs/
-output/
-artifacts/
-diagnostics/
-
-# OS and editor cruft
-.DS_Store
-Thumbs.db
-.vs/
-.vscode/
-*.user
-*.suo
-
-# Build and temp
-bin/
-obj/
-temp/
-tmp/
+# Azure DevOps / pipeline local artifacts
+_work/
+.azure-pipelines-cache/

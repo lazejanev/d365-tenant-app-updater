@@ -64,7 +64,7 @@ The Finance and Operations routes under `/dynamics/environments/{id}/` use the s
 This has been verified in practice: with an app-only (client credentials) token, `finopsproperties` returns HTTP 200 with full environment data, using the identical token that also succeeds against App Management.
 
 - If a Finance and Operations route returns **403 Forbidden**, revisit steps 2 and 3 above.
-- If `finopsversions` returns **404 RouteNotFound** while `finopsproperties` succeeds on the same environment, same token, same api-version, this is **not** a permissions problem. It has been observed to be intermittent: the identical call on the identical environment can return RouteNotFound on one run and a genuine 200 with real version data on a later run, with no configuration change in between. Treat it as a normal platform condition and simply re-run; do not chase it as a permissions or configuration issue. See the Finance and Operations section of the [README](../README.md).
+- If `finopsversions` returns **404 RouteNotFound** while `finopsproperties` succeeds on the same environment, same token, same api-version, this is **not** a permissions problem. It has been observed to be intermittent: the identical call on the identical environment can return RouteNotFound on one run and a genuine 200 with real version data on a later run, with no configuration change in between. Treat it as a normal platform condition and simply re-run. See the Finance and Operations section of the [README](../README.md).
 
 ## PowerShell version
 

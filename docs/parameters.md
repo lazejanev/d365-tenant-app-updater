@@ -40,7 +40,7 @@ Settings that are exposed both as a queue-time runtime parameter and as a librar
 
 | Variable | Default | Description |
 |---|---|---|
-| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail (installed-vs-available diffs, F&O AOS/demo detail, Anchor Solution reference value). |
+| `dumpDiagnostics` | `true` | Print per-environment diagnostic detail (installed-vs-available diffs, F&O AOS/demo detail, Anchor Solution version and current release train). |
 | `dumpSolutionCatalog` | `false` | Dump every Dataverse managed solution matching a broad generic-app hint list. Separate from `dumpDiagnostics` because on a Sales-heavy environment this alone can run to 150+ lines unrelated to F&O. |
 | `retryFailedInstalls` | `true` | Retry apps whose previous install ended in `InstallFailed`. |
 | `whatIf` | `false` | Plan only. Report what would change without changing anything. |
@@ -56,24 +56,38 @@ The F&O phase has **one on/off switch** (`finOpsApplyVersion`) and **one scope c
 | Variable | Default | Description |
 |---|---|---|
 | `finOpsApplyVersion` | `false` | **The only on/off switch.** Set to `true` to apply a new F&O application version on eligible environments. Everything else in this table only refines what/where/which kind an apply targets; none of them enable an apply on their own. |
-| `finOpsUpdateScope` | `QualityUpdate` | Restricts **which kind** of available version may be selected. See "How scope is decided" below. Displayed in the log using Microsoft's own terminology: `QualityUpdate` shows as **PQU**, `VersionUpdate` shows as **version update**. |
-| `finOpsTargetVersion` | (blank = highest matching scope) | A specific F&O application version to apply, for example `10.0.49.2`. Blank selects the highest version that matches `finOpsUpdateScope` per environment. If you name a version explicitly, it is still checked against the scope (unless scope is `Any`) and reported if it doesn't match. |
+| `finOpsUpdateScope` | `QualityUpdate` | Restricts **which kind** of available version may be selected. See "How scope is decided" below. Displayed in the log as **PQU** (`QualityUpdate`) or **version update** (`VersionUpdate`). |
+| `finOpsTargetVersion` | (blank = highest matching scope) | A specific F&O application version to apply, for example `10.0.49.3`. Blank selects the highest version that matches `finOpsUpdateScope` per environment. A named version is still checked against the scope (unless scope is `Any`) and reported if it doesn't match. |
 | `finOpsEnvironmentFilter` | (blank = all detected) | An additional allow-list applied to the F&O phase only, on top of `environmentFilter` and `environmentExclude`. |
 | `finOpsDeploymentTypes` | `UnifiedDeveloper,UnifiedSandbox,UnifiedProduction` | Deployment types eligible for a **version apply**. Inventory is always collected regardless. LCS types are excluded by default. |
 
 #### How scope is decided
 
-`finOpsUpdateScope` is matched **directly against Microsoft's own `releaseStage` field**, present on every entry returned by the `finopsversions` API (for example: `{"version":"10.0.48.7","releaseStage":"QualityUpdate"}`). There is no derived or guessed classification involved.
+Each entry returned by `finopsversions` carries Microsoft's `releaseStage`, for example `{"version":"10.0.49.3","releaseStage":"QualityUpdate"}`. That label describes **the build itself** (10.0.49.3 is a quality update on the 10.0.49 train). It does not say whether the build is on the **environment's** current train. The scope therefore combines `releaseStage` with the **release train** (the 3rd version segment, e.g. `48` in `10.0.48.7`):
 
 | `finOpsUpdateScope` | Selects |
 |---|---|
-| `QualityUpdate` (default, shown as **PQU** in the log) | Only versions Microsoft has staged `QualityUpdate` — an in-place patch on the environment's current release train. |
-| `VersionUpdate` (shown as **version update**) | Only versions staged anything other than `QualityUpdate` — a new release train, with schema and feature changes. |
-| `Any` | Every version returned, ignoring `releaseStage`; the numerically highest is selected. This is the only mode where a full release-wave jump can be selected as the default target. |
+| `QualityUpdate` (default, shown as **PQU**) | `releaseStage` is `QualityUpdate` **and** the version's train equals the environment's current train. Example: an environment on 10.0.48 can get 10.0.48.7, never 10.0.49.3. |
+| `VersionUpdate` (shown as **version update**) | The version is on the **next** train (current + 1) **and** is staged `GeneralAvailability` or `QualityUpdate`. Example: an environment on 10.0.48 can get 10.0.49.x, never 10.0.50.x in the same run, and never a build staged anything else (for example a preview). |
+| `Any` | Every version returned; the numerically highest is selected. No train or stage restriction. |
 
-**Important: this does not use the F&O Provisioning App Anchor Solution for classification, by design.** An earlier version of this script did, and it was confirmed live to be unreliable: multiple environments sharing the identical live application build reported different Anchor Solution values in the same run. The reason is structural, not a timing issue — the Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import), and is **not** touched by Microsoft's own automated Unified environment service update rollout, which is how these environments are actually updated in normal operation. Using it as a classification reference would have meant scope decisions were sometimes made against a value that did not reflect the environment's real state.
+**Where the current train comes from.** The 3rd segment of the F&O Provisioning App Anchor Solution version in Dataverse. The patch digit of that solution is known to lag behind the live environment (multiple environments on the identical live build have shown different patch digits), so it is never used to select or accept a version.
 
-The Anchor Solution's version is still shown, under `dumpDiagnostics`, as a single labeled diagnostic line — never in a decision-making headline, and never used to accept, reject, or classify anything.
+**Never-older guard (every scope, including `Any`).** The Anchor Solution lags the live build but never runs ahead of it, so its full version is a **lower bound** on what is running. A version at or below it is never applied, whether it was picked automatically or set in `finOpsTargetVersion`. This is the only use of the patch digit, and it can only stop an apply, never cause one. The log reads "no eligible version newer than the Anchor Solution" or "requested ... is not newer than the Anchor Solution". The guard is off when the Anchor version is not in the `10.0.<train>.<patch>` shape (for example the `1.0.x` anchors on LCS environments).
+
+**Fail-safe rule.** If the current train cannot be determined (no Anchor Solution, or a version that is not in the `10.0.<train>.<patch>` shape), the apply is **skipped** for that environment, unless the scope is `Any`. The log line reads "current release train unknown, apply skipped".
+
+**Known limitation.** The Anchor Solution is not updated by every update path. If an environment has already moved to a new train but its Anchor Solution still shows the old one:
+- `QualityUpdate` skips the environment (it can miss a patch, it never jumps a train).
+- `VersionUpdate` may treat a patch on the environment's real train as a "version update" (the next train after the stale one). It cannot go more than one train past the Anchor, and the never-older guard stops anything at or below the Anchor. Whether the apply endpoint itself refuses an older version has not been verified, so the script does not rely on it.
+
+One residual case remains: an environment really on 10.0.49.3 whose Anchor still reads 10.0.48.6, offered 10.0.48.7. That version is above the Anchor but below the live build, and the script cannot see the live train (`applicationVersion` from `finopsproperties` is a build number such as `10.0.2645.136`, not a `10.0.<train>.<patch>` version). Observed responses suggest `finopsversions` only offers versions newer than the live build, which would rule this out, but that is an observation, not a documented guarantee.
+
+Check the "Current train" line in the environment's diagnostic detail when an environment behaves unexpectedly.
+
+> **v2.4.0 and v2.4.1 used `releaseStage` alone.** Because a quality update on a newer train is also staged `QualityUpdate`, `QualityUpdate` scope in those versions could move environments to a new release train. This was confirmed live (10.0.48 environments moved to 10.0.49.3) and fixed in v2.4.2.
+
+> **v2.4.2 and earlier: multi-version lists.** When `finopsversions` returned a bare JSON array with two or more versions, those versions were lost and the environment was reported as "no versions listed". Fixed in v2.4.3.
 
 #### Why apply has exactly one on/off switch
 
@@ -186,13 +200,22 @@ Nothing to configure. This is the default. `finOpsApplyVersion` is `false`, so y
 
 > Environment names above are illustrative placeholders. Substitute your own environment display names or ids.
 
-Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only when a version staged `QualityUpdate` is actually offered for that environment. If Microsoft has not shipped a same-train patch since the environment's current version, this correctly reports "no PQU version available" rather than applying anything.
+Phase 1 still runs against every environment. Inventory is reported for every F&O environment. Version apply is attempted only on the three listed, and only when a version staged `QualityUpdate` exists **on that environment's current release train**. If the only offer is on a newer train, the log reports "no PQU version available for 10.0.48" and nothing is applied.
 
 ## Example: move onto the next release train deliberately
 
 - `finOpsApplyVersion = true`
 - `finOpsUpdateScope = VersionUpdate`
 
-Use this once you have decided you want to move an environment onto a new release wave (for example 10.0.48 to 10.0.49), rather than waiting for a same-train patch that may never come once the current train is fully caught up.
+Use this once you have decided you want to move an environment onto a new release wave (for example 10.0.48 to 10.0.49). It moves **one** train per run and only to builds staged `GeneralAvailability` or `QualityUpdate`. If only a later train is offered (for example 10.0.50 for an environment on 10.0.48), the log reports "no version update (next train) available" and nothing is applied.
+
+## Example: jump more than one release train deliberately
+
+- `finOpsApplyVersion = true`
+- `finOpsUpdateScope = Any`
+- `finOpsTargetVersion = 10.0.50.1` (the exact version you want)
+- `finOpsEnvironmentFilter = Dev01`
+
+`Any` lifts the train and stage restrictions, and the explicit target makes the jump a deliberate choice for the named environment. The never-older guard still applies.
 
 Run any apply configuration with `whatIf = true` first.

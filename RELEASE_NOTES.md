@@ -1,68 +1,105 @@
 # Release Notes
 
-## v2.4.1 - 2026-09-27
+## v2.4.3 - 2026-10-18
 
-Wording only. No logic changed.
+**Safety hardening on top of v2.4.2. Upgrade before running with `finOpsApplyVersion = true`.**
 
-Finance and Operations scope messages now use Microsoft's own public terminology instead of internal enum values:
+### What changed
 
-- `QualityUpdate` displays as **PQU** (matching Microsoft's "proactive quality update" terminology).
-- `VersionUpdate` displays as **version update**.
-- Every `[stage]` bracket in a headline is now `[Status: stage]`.
-- The diagnostic line listing available versions is now labeled "New version available" rather than the bare "Available".
+| Area | v2.4.2 | v2.4.3 |
+|---|---|---|
+| `QualityUpdate` (PQU) | Staged `QualityUpdate` on the current train | Unchanged |
+| `VersionUpdate` | Any **higher** train, any stage | The **next** train only, staged `GeneralAvailability` or `QualityUpdate` |
+| `Any` | Highest version | Unchanged |
+| Version at or below the Anchor Solution | Left to the apply endpoint (unverified) | **Never applied**, in every scope |
+| `finopsversions` bare array with 2+ entries | Read as "no versions listed" | Parsed correctly |
+| F&O detection | First "finance and operations" name wins | Unique names first, then a filtered name fallback |
+| F&O environment with a failed Dataverse read | Missing from the inventory | Inventoried, apply skipped |
 
-Example, before and after (environment name is an illustrative placeholder):
+### Why
 
-```
-Before: Dev04: ... - no QualityUpdate version offered. Available: 10.0.49.2 [GeneralAvailability]
-After:  Dev04: ... - no PQU version available. New version available: 10.0.49.2 [Status: GeneralAvailability]
-```
+- **Never older.** The Anchor Solution lags the live build but never runs ahead of it, so a version at or below it cannot be an upgrade. v2.4.2 relied on the apply endpoint to refuse such a request. That was never verified, so the script now refuses it itself.
+- **One train at a time.** v2.4.2's `VersionUpdate` would take the highest version on any higher train. That could move 10.0.48 straight to 10.0.50, or to a preview build, in one unattended run. For a deliberate multi-train move, use `Any` with an explicit `finOpsTargetVersion`.
+- **Parsing.** PowerShell member enumeration turned a bare multi-version array into a list of `$null`s. If an environment always showed "no versions listed" while PPAC offered updates, this was the cause.
 
-No release-stage matching, scope filtering, or apply decision changed. If you compared two runs before and after this release and the wording differences confused you at first, that confusion is expected and resolved by this note alone - the underlying `finopsversions` route itself is separately known to be intermittent (see v2.4.0 below and `docs/setup.md`), and can produce a genuinely different result between two runs regardless of this script.
+### Also fixed
 
-## v2.4.0 - 2026-09-27
-
-Removes the F&O Provisioning App Anchor Solution from every decision this script makes, and replaces it with Microsoft's own version classification.
-
-### Why this release exists
-
-The previous approach (introduced in v2.3.3) used the Anchor Solution's Dataverse-registered version as the reference point for deciding whether an available F&O version was a same-train patch or a new release train. This was confirmed live to be unreliable in a way that was structural, not occasional: **multiple environments in a single run shared the identical live application build**, yet their Anchor Solution readings split into two different values. The reason: Microsoft's own automated Unified environment service update rollout does not update that Dataverse record at all - only a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import) does. An environment updated the normal way could carry a stale Anchor Solution version indefinitely while being completely current in reality.
-
-The fix removes the Anchor Solution from the decision path entirely. It turns out the platform already answers the question directly: `finopsversions` returns a `releaseStage` field on every entry (for example `{"version":"10.0.48.7","releaseStage":"QualityUpdate"}`). There was never a need to derive a classification from a proxy value when the platform's own answer was in the response the whole time.
-
-### Highlights
-
-- **`finOpsUpdateScope` now matches Microsoft's own `releaseStage`**, not a derived comparison. `QualityUpdate` selects only versions staged `QualityUpdate`; `VersionUpdate` selects only versions staged anything else; `Any` ignores stage and picks the numerically highest.
-- **Anchor Solution demoted to a labeled, non-decisive diagnostic value.** Still shown under `dumpDiagnostics`, never in a headline, never used to accept/reject/classify anything.
-- **Finance and Operations output rewritten to be dramatically shorter.** A long explanatory sentence used to repeat in full on every environment line; it now prints once, in a legend at the top of the section. Each environment gets one compact headline.
+- Tokens are refreshed after 45 minutes on long runs.
+- The Dataverse solution query no longer uses `$top`, which disabled paging.
+- An install accepted without an operation id now counts as triggered.
 
 ### Upgrade notes
 
-- No variable changes. `finOpsUpdateScope` still accepts `QualityUpdate` / `VersionUpdate` / `Any`; only what it is matched against changed (for the better).
-- If your log output looked different across two recent runs and you suspected a regression: check whether both runs actually returned data from `finopsversions` (HTTP 200) or whether one hit the known-intermittent `RouteNotFound` condition (see `docs/setup.md`). A byte-for-byte diff between two script versions plus a diff between two run logs is the reliable way to tell "the script changed" apart from "the platform's response changed between runs" - the latter has been confirmed to happen with zero code or config changes in between.
+- Replace `scripts/Update-TenantApps.ps1`. No variable changes.
+- Run once with `whatIf = true`. Environments that previously showed "no versions listed" may now show real versions and a planned apply. Check them before a live run.
+- If you relied on `VersionUpdate` to jump more than one train, switch that run to `Any` with an explicit `finOpsTargetVersion`.
+
+## v2.4.2 - 2026-10-06
+
+> **Superseded by v2.4.3.** Its `VersionUpdate` scope was not bounded, and multi-version responses could be read as "no versions listed".
+
+**Critical fix. Upgrade before running with `finOpsApplyVersion = true`.**
+
+### What went wrong
+
+In v2.4.0 and v2.4.1, `finOpsUpdateScope = QualityUpdate` selected any version that Microsoft staged `QualityUpdate`. That label describes the build itself, not whether the build is on your environment's release train. Once 10.0.49 shipped, its patches (for example 10.0.49.3) were also staged `QualityUpdate`, so environments on 10.0.48 were moved to 10.0.49. This was confirmed live in a scheduled run.
+
+### What changed
+
+| Scope | v2.4.0 / v2.4.1 | v2.4.2 |
+|---|---|---|
+| `QualityUpdate` (PQU) | Staged `QualityUpdate` | Staged `QualityUpdate` **and** on the environment's current release train |
+| `VersionUpdate` | Staged anything other than `QualityUpdate` | On a **higher** release train |
+| `Any` | Highest version | Highest version (unchanged) |
+
+- The current release train is the 3rd segment of the F&O Provisioning App Anchor Solution version (the `48` in `10.0.48.6`). Only the train is used.
+- If the train cannot be determined, the apply is skipped unless the scope is `Any`.
+- Log lines now name the train, for example "no PQU version available for 10.0.48", and the diagnostic detail shows "Current train".
+
+### Known limitation
+
+The Anchor Solution is not updated by every update path. If an environment has moved to a new train but its Anchor Solution still shows the old one, `QualityUpdate` skips it, as long as `finopsversions` offers no version on the stale train. v2.4.3 adds a guard so that nothing at or below the Anchor is ever applied.
+
+### Upgrade notes
+
+- Replace `scripts/Update-TenantApps.ps1`. No variable changes.
+- Run once with `whatIf = true` and check each environment's "Current train".
+- If v2.4.0 or v2.4.1 already moved environments to a new train, those updates are not reverted by this release.
+
+## v2.4.1 - 2026-09-27
+
+> **Affected by the release-train bug fixed in v2.4.2.**
+
+Wording only. `QualityUpdate` displays as **PQU**, `VersionUpdate` as **version update**, brackets read `[Status: stage]`, and the available-versions diagnostic is labeled "New version available".
+
+## v2.4.0 - 2026-09-27
+
+> **Affected by the release-train bug fixed in v2.4.2.**
+
+- Removed patch-level classification based on the F&O Provisioning App Anchor Solution, whose patch digit was shown to lag behind the live environment.
+- Matched `finOpsUpdateScope` against `releaseStage` only. This was incomplete for `QualityUpdate` and is corrected in v2.4.2.
+- Shorter Finance and Operations output: one compact headline per environment, explanation printed once.
 
 ## v2.3.x series - 2026-09-19 through 2026-09-26
 
-Incremental hardening of the Finance and Operations phase, culminating in v2.4.0 above:
-
-- **v2.3.0**: `finOpsApplyVersion` introduced as the single Finance and Operations on/off switch. Dead settings (`pollIntervalSec`, `pollTimeoutMin`) removed. Transport failures reported honestly instead of as `HTTP -1`. PowerShell 7 required for this phase.
-- **v2.3.1**: Removed a client-side "already at or above" pre-check that compared two incompatible version schemes; the apply call's own response became the sole authority.
-- **v2.3.2**: Admin Mode detection added for Phase 1 - an environment left in Administration Mode is now detected on the first failure and every remaining app for it is skipped, rather than repeating the identical failure per app.
-- **v2.3.3**: `finOpsUpdateScope` introduced, initially classified using the Anchor Solution as a reference (later replaced in v2.4.0).
-- **v2.3.4**: Fixed a regression where the v2.3.1 fix had been accidentally undone during a rebuild.
-- **v2.3.5**: The F&O Provisioning App Anchor Solution excluded from Phase 1's generic install loop, resolving a contradiction where the same version jump was reported as both a failure and a success.
-- **v2.3.6**: Output reorganised to one headline per environment; inventory table made unconditional; `dumpSolutionCatalog` split out from `dumpDiagnostics`.
-- **v2.3.7 / v2.3.8**: Iterated on whether Finance and Operations detail should use collapsible groups. Landed on: keep the groups, but set the group's label to the actual headline so the outcome is visible even collapsed.
-- **v2.3.9**: Identified and explained the Anchor Solution lag with a warning label, one release before removing it from the decision path entirely in v2.4.0.
+- **v2.3.0**: `finOpsApplyVersion` as the single Finance and Operations on/off switch. Dead settings removed. Transport failures reported honestly. PowerShell 7 required for this phase.
+- **v2.3.1**: The apply call's own response became the sole authority on whether an apply is needed.
+- **v2.3.2**: Admin Mode detection for Phase 1.
+- **v2.3.3**: `finOpsUpdateScope` introduced.
+- **v2.3.4**: Fixed a regression that reintroduced a cross-scheme version comparison.
+- **v2.3.5**: The F&O Provisioning App Anchor Solution excluded from Phase 1's generic install loop.
+- **v2.3.6**: One headline per environment; inventory table unconditional; `dumpSolutionCatalog` split out.
+- **v2.3.7 / v2.3.8**: Collapsible groups kept, with the group label set to the headline.
+- **v2.3.9**: Identified the Anchor Solution lag.
 
 ## v2.2.0 - 2026-09-18
 
-Adds Finance and Operations environment inventory, and implements F&O application version updates against the documented Power Platform routes, gated behind a live route check.
+Finance and Operations inventory and version update against the documented Power Platform routes, gated behind a live route check.
 
 ## v2.0.0 - 2026-08-18
 
-Reduced required configuration to three variables (`ClientId`, `ClientSecret`, `TenantId`), with every other setting optional and defaulted in the script.
+Required configuration reduced to `ClientId`, `ClientSecret`, `TenantId`.
 
 ## v1.x series - 2026-08-16 through 2026-08-18
 
-Initial public release and early hardening: environment discovery, version comparison with strict never-downgrade logic, `AppExclude` / `EnvironmentExclude` deny-lists, Custom Install Experience detection, and the optional PAC CLI fallback.
+Initial public release and early hardening: environment discovery, never-downgrade version comparison, `AppExclude` / `EnvironmentExclude`, Custom Install Experience detection, optional PAC CLI fallback.
