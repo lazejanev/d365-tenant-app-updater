@@ -23,26 +23,27 @@
 #                   only way a version is ever applied. It changes the
 #                   environment.
 #     UPDATE SCOPE  controlled by finOpsUpdateScope, default QualityUpdate
-#                   (displayed as "PQU" in the log, matching Microsoft's
-#                   own terminology). Matched directly against Microsoft's
-#                   OWN releaseStage field on each version returned by
-#                   finopsversions - QualityUpdate selects only versions
-#                   staged QualityUpdate (a same-train patch);
-#                   VersionUpdate selects only versions staged anything
-#                   else (a new release train); Any ignores the stage and
-#                   picks the numerically highest.
-#                   IMPORTANT: this does NOT use the F&O Provisioning App
-#                   Anchor Solution for classification. That value was
-#                   confirmed live to be unreliable - ten environments
-#                   sharing the identical live application build reported
-#                   two different Anchor Solution readings in the same
-#                   run, because Microsoft's own automated Unified
-#                   environment service update rollout does not update
-#                   that Dataverse record (only a Dataverse-level solution
-#                   operation, such as a copy from an already-updated
-#                   source, does). The Anchor Solution value is still
-#                   shown as a diagnostic under DumpDiagnostics, but it is
-#                   never used to accept, reject, or classify anything.
+#                   (displayed as "PQU" in the log). Since v2.4.2 it uses
+#                   TWO checks together:
+#                     QualityUpdate - the version must be staged
+#                                     QualityUpdate (Microsoft's own
+#                                     releaseStage) AND be on the SAME
+#                                     release train as the environment
+#                                     (e.g. 10.0.48.x stays on 10.0.48).
+#                     VersionUpdate - the version must be on a HIGHER
+#                                     release train than the environment.
+#                     Any           - the numerically highest version,
+#                                     no restriction.
+#                   The environment's current release train is read from
+#                   the 3rd segment of the F&O Provisioning App Anchor
+#                   Solution version. If it cannot be determined, the
+#                   apply is SKIPPED (fail-safe) unless the scope is Any.
+#                   WARNING: v2.4.0 and v2.4.1 checked releaseStage only.
+#                   releaseStage describes the build itself, not its
+#                   relation to the environment, so a QualityUpdate on a
+#                   NEWER train (e.g. 10.0.49.3) moved 10.0.48
+#                   environments to 10.0.49. Do not use those versions
+#                   with finOpsApplyVersion = true.
 #
 #   Version apply is gated behind a live route check, so it begins working
 #   automatically once the finopsversions route is available. That is
@@ -123,7 +124,7 @@ parameters:
       - 'false'
 
   - name: finOpsUpdateScope
-    displayName: 'F&O update scope (QualityUpdate = PQU/same-train patch, VersionUpdate = new release train, Any = highest regardless)'
+    displayName: 'F&O update scope (QualityUpdate = PQU on the same release train, VersionUpdate = higher release train, Any = highest regardless)'
     type: string
     default: useLibraryOrDefault
     values:
@@ -227,7 +228,7 @@ stages:
               FinOpsApplyVersion:          $(finOpsApplyVersion)
               FinOpsApplyVersionOverride:  $(finOpsApplyOverride)
               # Restricts WHICH kind of update apply may select. Default
-              # QualityUpdate (displayed as "PQU" in the log).
+              # QualityUpdate (PQU on the same release train only).
               FinOpsUpdateScope:           $(finOpsUpdateScope)
               FinOpsUpdateScopeOverride:   $(finOpsUpdateScopeOverride)
               FinOpsTargetVersion:         $(finOpsTargetVersion)

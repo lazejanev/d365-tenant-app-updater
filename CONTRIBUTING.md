@@ -5,15 +5,15 @@ Thanks for your interest in improving this project. Issues and pull requests are
 ## Ground rules
 
 - Be respectful and constructive. This is a community project maintained in spare time.
-- Never commit secrets. No tenant IDs, environment IDs, application or client IDs, secrets, org URLs, or customer names. The only required inputs are provided at run time through the variable group.
-- Keep it generic. Nothing in this repo should be tied to a specific customer, tenant, or environment.
+- Never commit secrets. No tenant IDs, environment IDs, application or client IDs, secrets, org URLs, environment names, or customer names. The only required inputs are provided at run time through the variable group.
+- Keep it generic. Nothing in this repo should be tied to a specific customer, tenant, or environment. Use placeholders such as `Dev01` in examples.
 
 ## Reporting issues
 
 When you open an issue, include:
 
 - What you expected to happen and what actually happened.
-- The relevant part of the pipeline log, with all IDs, secrets, and customer names redacted.
+- The relevant part of the pipeline log, with all IDs, secrets, environment names and customer names redacted.
 - Your agent type (Microsoft-hosted or self-hosted) and PowerShell version.
 - Which variables you set in the group (names only, values redacted).
 
@@ -21,7 +21,7 @@ When you open an issue, include:
 
 - Fork the repository and create a branch from `main`.
 - Make your change. Keep it focused and small where possible.
-- Test against a non-production tenant or environment.
+- Test against a non-production tenant or environment, with `whatIf = true` first.
 - Update the docs, `CHANGELOG.md` (Unreleased section), and `RELEASE_NOTES.md` if relevant.
 - Open the pull request with a clear description of the change and why it helps.
 
@@ -33,7 +33,7 @@ When you open an issue, include:
 - Fail loudly on real errors, but classify custom-install apps as manual-required rather than failures.
 - Report what an API returned. Do not assert a cause that has not been verified.
 - Each Finance and Operations capability gets exactly one variable, and its default is the safe/inert value. Do not introduce a second variable, alias, or default that can produce the same effect as an existing switch.
-- **When the platform gives you its own classification, use it. Do not derive one.** `finopsversions` returns a `releaseStage` field on every entry (`QualityUpdate`, `GeneralAvailability`, etc.) - this is Microsoft's own answer to "what kind of update is this". An earlier version of this script instead tried to infer the same answer by diffing version numbers against the F&O Provisioning App Anchor Solution, and that inferred value was confirmed live to disagree with reality on roughly half of a tenant's environments (see the invariant below). If an API response already contains the classification you need, use it directly; do not reconstruct it from a proxy value, however plausible that proxy looks.
+- **Use a platform label only for the question it actually answers.** `finopsversions` returns `releaseStage` (`QualityUpdate`, `GeneralAvailability`, ...). It describes the build itself, not the build's relationship to a given environment. A quality update on a newer release train is still staged `QualityUpdate`. Before using any API field in a decision, verify what it is relative to - the build, the environment, or the tenant.
 
 ## Non-negotiable invariants
 
@@ -57,29 +57,38 @@ Any external tool (notably `pac`) that leaves a non-zero `$LASTEXITCODE` will fa
 
 ### 3. Read the HTTP error body from the right place
 
-PowerShell puts the HTTP response body in `$_.ErrorDetails.Message`, **not** `$_.Exception.Message`. The latter only contains "Response status code does not indicate success". Reading only the latter once misclassified nine "manual install required" apps as failures. Use the `Get-ErrorText` helper.
+PowerShell puts the HTTP response body in `$_.ErrorDetails.Message`, **not** `$_.Exception.Message`. Reading only the latter once misclassified nine "manual install required" apps as failures. Use the `Get-ErrorText` helper.
 
 ### 4. Do not short-circuit a probe across environments
 
-An earlier build stopped probing after the first `RouteNotFound` and assumed every other environment would behave the same, which hid possible per-deployment-type differences. A 404 over REST costs about 25 ms, so probing every environment is effectively free. Probe them all.
+An earlier build stopped probing after the first `RouteNotFound` and assumed every other environment would behave the same. A 404 over REST costs about 25 ms, so probing every environment is effectively free. Probe them all.
 
 ### 5. Destructive behaviour must be opt-in, and only one variable may ever enable it
 
-`finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. It exists precisely because the apply path is gated behind a live route check and would otherwise activate on its own the moment the route became available. Do not add a second variable, alias, or combined switch that can also flip this on.
+`finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. Do not add a second variable, alias, or combined switch that can also turn it on.
 
-### 6. Do not trust a Dataverse solution-catalog version as a live-state proxy
+### 6. Only use the release train from the Anchor Solution, never the patch digit
 
-The F&O Provisioning App Anchor Solution's version in Dataverse is only updated by a Dataverse-level solution operation (an environment copy from an already-updated source, or an explicit solution import). It is **not** updated by Microsoft's own automated Unified environment service update rollout - the normal way these environments actually get updated. Confirmed live: ten environments sharing the identical, freshly-fetched `finopsproperties.applicationVersion` reported two different Anchor Solution values in the same run. Never use this value (or any similar Dataverse-registered proxy) as the basis for a decision about an environment's true current state. It may still be shown as a labeled diagnostic, but never in a headline that implies it is authoritative.
+The F&O Provisioning App Anchor Solution version in Dataverse is not updated by every update path. Multiple environments on the identical live build have shown different patch digits. Its **release train** (3rd segment) is used to keep `QualityUpdate` on the current train; its **patch digit** must never be used for any decision. Show it only as a labeled diagnostic.
+
+### 7. An update scope must fail safe
+
+`QualityUpdate` once moved ten environments from 10.0.48 to 10.0.49, because the scope relied on `releaseStage` alone. Any rule that limits how far an apply may go must:
+
+- check every condition the scope promises (here: stage **and** release train), and
+- **skip** the apply when a required input is missing or unparseable, rather than fall back to a wider selection.
+
+Missing a patch is acceptable. Moving an environment further than the operator asked for is not.
 
 ### Other traps worth knowing
 
 - **Backtick escape:** in `"$uri$sep`api-version=..."`, `` `a `` is the BELL character. Use `"${sep}api-version="`.
-- **`.Count` under StrictMode** throws on `$null`, scalars, and empty generic lists. Avoid `System.Collections.Generic.List` combined with `-f` formatting over pipelines ("Argument types do not match").
+- **`.Count` under StrictMode** throws on `$null`, scalars, and empty generic lists. Avoid `System.Collections.Generic.List` combined with `-f` formatting over pipelines.
 - **`$env` is reserved.** Never use it as a loop variable.
 - **Detection must check state.** The package list is fetched with `appInstallState=All`, so it includes apps merely *offered*. Matching without checking `state -eq 'Installed'` once flagged every environment as F&O.
-- **Undefined `$(var)` passed as a script argument crashes PowerShell.** Pass optional values through the pipeline `env:` block so an undefined variable arrives as a harmless literal the script ignores.
+- **Undefined `$(var)` passed as a script argument crashes PowerShell.** Pass optional values through the pipeline `env:` block.
 - **`-SkipHttpErrorCheck` is PowerShell 7 only.** Guard any new use of it, as the F&O phase does.
-- **A collapsible `##[group]` label should be the finding, not a placeholder.** Azure DevOps shows a group's label even when collapsed (its default state). If the label is generic ("F&O detail") rather than the actual outcome, comparing many collapsed environments becomes impossible without expanding every one. Always set the group label to the same headline text you would want to read if nothing were expanded.
+- **A collapsible `##[group]` label should be the finding, not a placeholder.** Azure DevOps shows the label even when the group is collapsed.
 
 ## Validation checklist before shipping a script change
 
@@ -96,9 +105,9 @@ assert not (params & assigns)
 assert s.rstrip().endswith('exit 0')
 ```
 
-Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and no `Generic.List` is used with `-f` over a pipeline.
+Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against a version on a **newer** release train staged `QualityUpdate`.
 
-**Always suggest running with `whatIf = true` first.**
+**Always run with `whatIf = true` first.**
 
 ## Security
 
