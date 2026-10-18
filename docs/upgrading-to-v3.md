@@ -9,7 +9,7 @@ v3.0.0 is a major version because **production is now held back by default** and
 | Production | Updated with everything else | **Production ring, on by default**: a production environment only takes a version a non-production environment already runs | Nothing, or set `productionRing = false` to keep v2 behaviour |
 | Pipeline | One stage, one job | Plan → Apply non-production → Apply production | Update the pipeline YAML (below). Nothing to create in Azure DevOps; a production approval is optional (`productionApprovalEnvironment`) |
 | PowerShell | 5.1 for apps, 7 for F&O | **7.2 or later for everything** | Nothing on Microsoft-hosted agents. Self-hosted: install PowerShell 7 |
-| App installs | Triggered, not followed | Waits up to 30 minutes and reports each result | Nothing. `waitForInstallsMinutes = 0` restores v2 behaviour |
+| App installs | Triggered, not followed | Triggered, not followed (the next run reports the outcome). Optional: `waitForInstallsMinutes` waits and reports in the same run | Nothing |
 | Ordering | API order | **A to Z** (environments and apps, Dev2 before Dev10), non-production before production | Nothing |
 | Reports | Log only | A colour-coded results board at the end of the log, `summary.md` on the run page (Extensions tab) and `report.json` artifact | Nothing |
 | `appExclude` partial matches | Silent | Still work, reported as deprecated | Replace with exact names or `*` wildcards when convenient |

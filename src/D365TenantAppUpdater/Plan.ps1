@@ -21,9 +21,20 @@ function Invoke-Collect {
 
     $appStates = @()
     $dumped = $false
+    $total = Get-Count $Discovery.InScope
+    $n = 0
+    if ($total -gt 0) { Write-Section "READING $total ENVIRONMENT(S) (A–Z)" }
     foreach ($envObj in $Discovery.InScope) {
+        $n++
+        $sw = [Diagnostics.Stopwatch]::StartNew()
         $dump = ($Settings.DumpSolutionCatalog -and -not $dumped)
         $st = Get-AppEnvironmentState -Settings $Settings -EnvObj $envObj -DumpCatalog $dump
+        # One progress line per environment, so a long read never looks stuck.
+        $what = "$(Get-Count @($st.Packages | Where-Object { [string]$_.state -eq 'Installed' })) installed apps, $($st.SolutionCount) solutions"
+        if ($st.PackagesError) { $what = 'app packages could not be listed' }
+        elseif ($st.SolutionsError) { $what = 'installed solutions could not be read' }
+        if ($st.FinOpsMarker) { $what += ', F&O' }
+        Write-Line ("  {0,5}  {1}  {2} ({3:N0}s)" -f "$n/$total", $envObj.DisplayName, $what, $sw.Elapsed.TotalSeconds)
         if ($dump -and -not $st.SolutionsError -and -not $st.PackagesError) { $dumped = $true }
         if ($st.PackagesError) { $errors += "$($envObj.DisplayName): could not list app packages: $($st.PackagesError)" }
         elseif ($st.SolutionsError) {
@@ -48,8 +59,17 @@ function Invoke-Collect {
         if ($releaseMap.ScheduleError) { $warnings += "Microsoft's PQU schedule was not used ($($releaseMap.ScheduleError)). Using the built-in release map: $($releaseMap.Label). Environments on a newer release are skipped, not guessed." }
         if ((Get-Count $releaseMap.Ambiguous) -gt 0) { $warnings += "Microsoft's schedule lists these builds under more than one release, so environments on them are skipped: $(Join-Names $releaseMap.Ambiguous)" }
         if ((Get-Count $releaseMap.Invalid) -gt 0) { $warnings += "finOpsBuildTrainMap entries ignored (expected '10.0.<build>=<train>', e.g. 10.0.2790=49): $(Join-Names $releaseMap.Invalid)" }
+        $fn = 0
+        $ftotal = Get-Count $foEnvs
+        Write-Line "  Finance and Operations: reading $ftotal environment(s)"
         foreach ($e in $foEnvs) {
+            $fn++
+            $sw = [Diagnostics.Stopwatch]::StartNew()
             $fs = Get-FinOpsEnvironmentState -Settings $Settings -EnvObj $e -TrainMap $releaseMap.Map
+            $fwhat = $fs.AppVersion
+            if ($null -ne $fs.Train) { $fwhat += " [10.0.$($fs.Train)]" }
+            if ($fs.PropsError) { $fwhat = 'properties unavailable' }
+            Write-Line ("  {0,5}  {1}  {2} ({3:N0}s)" -f "$fn/$ftotal", $e.DisplayName, $fwhat, $sw.Elapsed.TotalSeconds)
             # The F&O deployment type can make an environment Production.
             $ring = Get-EnvironmentRing -EnvObj $e -Settings $Settings -FinOpsDeploymentType $fs.DeploymentType
             if ($ring -ne $e.Ring) { $e.Ring = $ring }

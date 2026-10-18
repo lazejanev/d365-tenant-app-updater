@@ -34,7 +34,7 @@ src/D365TenantAppUpdater/
   Apps.ps1                             phase 1: collect and decide
   FinOps.ps1                           phase 2: collect and decide
   Plan.ps1                             collect -> plan, plan.json
-  Apply.ps1                            execute, re-validate, wait for installs
+  Apply.ps1                            execute, re-validate, trigger (optional wait for installs)
   Report.ps1                           results board, summary.md, report.json
   Main.ps1                             Invoke-D365TenantAppUpdate
 tests/                                 Pester 5 (Unit, Scenario), fake tenant in TestHelpers.ps1

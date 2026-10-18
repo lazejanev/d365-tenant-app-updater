@@ -259,8 +259,10 @@ function Wait-AppOperations {
     param($Settings, $Results)
     $pending = @($Results | Where-Object { $_.Phase -eq 'Apps' -and $_.Result -eq 'Started' -and $_.OperationId })
     if ((Get-Count $pending) -eq 0 -or $Settings.WaitForInstallsMinutes -le 0) { return }
-    Write-Section "Waiting for $((Get-Count $pending)) app install(s) (up to $($Settings.WaitForInstallsMinutes) minutes)"
-    $deadline = (Get-Now).AddMinutes($Settings.WaitForInstallsMinutes)
+    Write-Section "Waiting for $((Get-Count $pending)) app install(s) (up to $($Settings.WaitForInstallsMinutes) minutes, waitForInstallsMinutes)"
+    $start = Get-Now
+    $deadline = $start.AddMinutes($Settings.WaitForInstallsMinutes)
+    $lastNote = $start
     while ($true) {
         foreach ($p in $pending) {
             if ($p.Result -ne 'Started') { continue }
@@ -277,8 +279,15 @@ function Wait-AppOperations {
                 Write-RunWarning "$($p.EnvironmentName): $($p.AppName) $($p.To) install $($state.ToLowerInvariant())."
             }
         }
-        if ((Get-Count @($pending | Where-Object { $_.Result -eq 'Started' })) -eq 0) { return }
-        if ((Get-Now) -ge $deadline) { break }
+        $running = Get-Count @($pending | Where-Object { $_.Result -eq 'Started' })
+        if ($running -eq 0) { return }
+        $now = Get-Now
+        if ($now -ge $deadline) { break }
+        # A line every minute, so a long wait never looks stuck.
+        if (($now - $lastNote).TotalSeconds -ge 60) {
+            Write-Line ("  {0} install(s) still running · {1:N0} of {2} min" -f $running, ($now - $start).TotalMinutes, $Settings.WaitForInstallsMinutes)
+            $lastNote = $now
+        }
         & $script:PollSleep $script:PollIntervalSeconds
     }
     foreach ($p in $pending) {

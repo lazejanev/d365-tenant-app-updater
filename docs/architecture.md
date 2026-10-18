@@ -52,7 +52,7 @@ Non-production updates as soon as Microsoft offers something ("test and break fa
 | `Host.ps1` | The only file that knows Azure DevOps from GitHub: colours, groups, warnings, outputs, run result. |
 | `Http.ps1` | The only HTTP caller. Never throws; retries GET on 429/503; never retries a POST. |
 
-**Collect, decide, act.** Decisions are plain functions of collected data. That is what lets the production ring look at every environment before deciding any of them, keeps the order A to Z independent of the API's order, and lets 138 tests run against a fake tenant without contacting Microsoft.
+**Collect, decide, act.** Decisions are plain functions of collected data. That is what lets the production ring look at every environment before deciding any of them, keeps the order A to Z independent of the API's order, and lets 141 tests run against a fake tenant without contacting Microsoft.
 
 ## 5. App decision
 

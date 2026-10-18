@@ -11,7 +11,7 @@ flowchart TB
     end
     COL --> PLAN["Plan.ps1<br/>decide: update · retry · hold · skip<br/>production ring proof"]
     PLAN --> PJ[("plan.json")]
-    PJ --> APPLY["Apply.ps1<br/>settings gate · re-validate<br/>install · apply · wait"]
+    PJ --> APPLY["Apply.ps1<br/>settings gate · re-validate<br/>trigger install · apply"]
     APPLY --> REP["Report.ps1<br/>results board · summary.md · report.json"]
     PLAN --> REP
     HOST["Host.ps1<br/>Azure DevOps · GitHub · local<br/>colours · outputs · exit code"]

@@ -24,11 +24,11 @@ v3 keeps every v2 setting, so your variable group keeps working, and adds the co
 - **Plan, then apply.** The pipeline now has three stages: Plan (reads the tenant, changes nothing), Apply non-production, Apply production. Optionally require an approval before production (Azure DevOps: `productionApprovalEnvironment`; GitHub: the `d365-production` environment) if you want a person to sign off production. Apply re-checks every action against the live tenant first.
 - **GitHub Actions.** The same module, rules and three jobs run on GitHub. See `docs/setup-github.md`.
 - **No client secret.** Sign in with OpenID Connect on GitHub, or workload identity federation on Azure DevOps (preview). The secret remains supported, and works as a backup.
-- **You see the outcome.** App installs are followed for up to 30 minutes and reported as succeeded, failed or still running. Every run publishes a summary on the run page and a JSON report.
+- **You see the outcome.** Every run publishes a summary on the run page and a JSON report. App installs are triggered and the next run reports them; optionally the run waits and reports each install itself.
 - **A to Z.** Environments and apps are processed and reported in alphabetical order, with numbers in numeric order (Dev2 before Dev10), identical on every agent.
 - **A clearer results view.** The log ends with a colour-coded board, one line per app grouped by environment; the run page opens with counters and the same list.
 - **Architecture diagrams.** `docs/architecture.md` shows how it all fits together.
-- **Tested.** 138 automated tests run on every change, on Linux and Windows, with no tenant needed.
+- **Tested.** 141 automated tests run on every change, on Linux and Windows, with no tenant needed.
 
 **Upgrading:** PowerShell 7.2+ is now required for the whole run (Microsoft-hosted agents have it). Copy `src/` and `pipelines/` along with `scripts/`, and replace `azure-pipelines.yml`. Full guide: `docs/upgrading-to-v3.md`.
 
@@ -42,7 +42,8 @@ Major version: production is held back by default, and the run is split into Pla
   - Fixed before release: the production stage referenced the environment `d365-production` by default. Azure DevOps does not create environments for YAML that arrives through a git sync, so every run failed at queue time with "Environment d365-production could not be found".
 - **GitHub Actions support**: `.github/workflows/tenant-app-updater.yml` with the same three jobs, OpenID Connect sign-in, and the `d365-production` environment for optional required reviewers. Setup: [docs/setup-github.md](docs/setup-github.md).
 - **Federated sign-in, no secret**: GitHub OIDC, and Azure DevOps workload identity federation through `azure-pipelines-federated.yml` (preview). `authMode` (`Auto`, `Federated`, `ClientSecret`): in `Auto` a refused federated sign-in falls back to the client secret with a warning.
-- **Waits for app installs** (`waitForInstallsMinutes`, default 30) and reports each one as Succeeded, Failed or TimedOut.
+- **Optional wait for app installs** (`waitForInstallsMinutes`, default `0` = trigger and move on, as in v2). With a number of minutes the Apply stage waits, prints a progress line every minute, and reports each install as Succeeded, Failed or TimedOut.
+- **Progress while reading the tenant**: the Plan stage prints one line per environment as it reads it (`3/17  commerce-code-ppr  59 installed apps, 1776 solutions, F&O (6s)`) and one per F&O environment, so a long read never looks stuck.
 - **Run summary on the run page** (Azure DevOps Extensions tab, GitHub job summary) and `report.json`, published as artifacts with `plan.json`.
 - **A to Z everywhere**: environments and apps are processed and listed alphabetically: case-insensitive, numbers in numeric order (Dev2 before Dev10), `-`, `_`, `.` and spaces treated alike, and the same order on every agent and locale (ordinal comparison, not culture rules). Non-production is applied before production.
 - **Results board**: the log ends with every environment A to Z and one colour-coded, tagged line per app (`[UPDATED]`, `[RUNNING]`, `[PLANNED]`, `[HELD]`, `[FAILED]`, ...), coloured with Azure DevOps formatting, ANSI on GitHub, and console colours locally. Production lines say which non-production environment proved the version.
@@ -50,7 +51,7 @@ Major version: production is held back by default, and the run is split into Pla
 - **Architecture diagrams**: [docs/architecture.md](docs/architecture.md) with seven diagrams (system context, pipeline stages, production ring, module, app decision, F&O decision, sign-in), Mermaid sources in `docs/diagrams/`, and screenshots of the log and run summary.
 - F&O inventory shows each environment's **maintenance window** (`finopsadminsettings`).
 - `failOnIssues`: fail the run (exit code 1) instead of finishing with issues.
-- **Tests and CI**: Pester suite (138 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
+- **Tests and CI**: Pester suite (141 tests, including the 22 F&O scenarios that verified 2.4.3 and 2.4.4) on Linux and Windows, PSScriptAnalyzer and a YAML check on every pull request; `release.yml` publishes a GitHub release from a version tag.
 
 ### Changed
 
