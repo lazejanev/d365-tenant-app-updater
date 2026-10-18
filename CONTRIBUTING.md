@@ -67,16 +67,24 @@ An earlier build stopped probing after the first `RouteNotFound` and assumed eve
 
 `finOpsApplyVersion` is the single variable that governs Finance and Operations version apply. Do not add a second variable, alias, or combined switch that can also turn it on.
 
-### 6. Only use the release train from the Anchor Solution, never the patch digit
+### 6. The Anchor Solution may only narrow an apply, never widen it
 
-The F&O Provisioning App Anchor Solution version in Dataverse is not updated by every update path. Multiple environments on the identical live build have shown different patch digits. Its **release train** (3rd segment) is used to keep `QualityUpdate` on the current train; its **patch digit** must never be used for any decision. Show it only as a labeled diagnostic.
+The F&O Provisioning App Anchor Solution version in Dataverse is not updated by every update path. Multiple environments on the identical live build have shown different patch digits. It lags the live build but never runs ahead of it. So:
+
+- its **release train** (3rd segment) decides which train a scope refers to;
+- its **full version** may be used only as a **lower bound** that refuses an apply (the never-older guard);
+- its **patch digit** must never be used to select or accept a version.
+
+Any new use of it must only ever be able to stop an apply, not cause one.
 
 ### 7. An update scope must fail safe
 
 `QualityUpdate` once moved ten environments from 10.0.48 to 10.0.49, because the scope relied on `releaseStage` alone. Any rule that limits how far an apply may go must:
 
-- check every condition the scope promises (here: stage **and** release train), and
-- **skip** the apply when a required input is missing or unparseable, rather than fall back to a wider selection.
+- check every condition the scope promises (here: stage **and** release train),
+- bound how far it can move (`VersionUpdate` moves one train at a time, released stages only),
+- **skip** the apply when a required input is missing or unparseable, rather than fall back to a wider selection, and
+- never rely on the platform to refuse a bad request (for example a downgrade) unless that behaviour has been verified live.
 
 Missing a patch is acceptable. Moving an environment further than the operator asked for is not.
 
@@ -89,6 +97,8 @@ Missing a patch is acceptable. Moving an environment further than the operator a
 - **Undefined `$(var)` passed as a script argument crashes PowerShell.** Pass optional values through the pipeline `env:` block.
 - **`-SkipHttpErrorCheck` is PowerShell 7 only.** Guard any new use of it, as the F&O phase does.
 - **A collapsible `##[group]` label should be the finding, not a placeholder.** Azure DevOps shows the label even when the group is collapsed.
+- **Member enumeration on arrays.** `$array.prop` returns one value per element, so on an array of objects without `prop` it is an array of `$null`s, which is truthy for 2+ elements. Check `-isnot [array]` and `PSObject.Properties[...]` before unwrapping a response. This once made every multi-version `finopsversions` response read as "no versions listed".
+- **Do not use `$top` on a Dataverse query you page with `@odata.nextLink`.** `$top` suppresses the next link.
 
 ## Validation checklist before shipping a script change
 
@@ -105,7 +115,7 @@ assert not (params & assigns)
 assert s.rstrip().endswith('exit 0')
 ```
 
-Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against a version on a **newer** release train staged `QualityUpdate`.
+Also confirm: the YAML parses, `$LASTEXITCODE` is reset after every external call, and any change to `finOpsUpdateScope` is tested against: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version **at or below** the Anchor Solution; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
 
 **Always run with `whatIf = true` first.**
 

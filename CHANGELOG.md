@@ -14,7 +14,31 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Parallel installs across environments.
 - Dry-run report published as a pipeline artifact.
 
+## [2.4.3] - 2026-10-18
+
+### Fixed
+
+- **Multi-version `finopsversions` responses were read as "no versions listed".** When the route returned a bare JSON array with two or more entries, `ConvertTo-FinOpsVersionList` probed `$Json.value` (and similar) on the array. PowerShell member enumeration returns one `$null` per entry, which is truthy for two or more entries, so the real list was replaced by `$null`s. Environments offered several versions were never updated. Single-entry responses and responses wrapped in `{"value": [...]}` were unaffected. The parser now only unwraps an object, never an array.
+- **F&O detection depended on package order.** `Get-FinOpsMarkerPackage` returned the first installed package whose display name contained "finance and operations". If another such app (for example a virtual entity solution) was listed before the provisioning app, the wrong package was used: its version became the "anchor" (train unknown, so a valid PQU was skipped), and the real provisioning app was sent to the Phase 1 install loop. Unique-name markers are now checked across all packages first, and the display-name fallback ignores virtual entity, dual-write and package manager apps.
+- **An F&O environment whose Dataverse read failed vanished from the inventory.** Detection now happens before the Dataverse read. Such an environment is inventoried and never has a version applied in that run (new counter "skipped (Dataverse read)").
+
+### Changed
+
+- **Never-older guard, in every scope.** The Anchor Solution lags the live build but never leads it, so its full version is a lower bound on what is running. A version at or below it is never applied, whether chosen automatically or set in `finOpsTargetVersion`, including with `Any`. Previously the script relied on the apply endpoint to refuse an older version, which was never verified. New counter "skipped (not newer)". The guard is inactive when the Anchor version is not in the `10.0.<train>.<patch>` shape.
+- **`VersionUpdate` is bounded.** It now selects only the **next** release train (current + 1) and only versions staged `GeneralAvailability` or `QualityUpdate`. In 2.4.2 it accepted any higher train and any stage, so one run could jump several trains or apply a preview build, including on `UnifiedProduction`. A deliberate multi-train move now needs `Any` plus an explicit `finOpsTargetVersion`.
+- Power Platform and BAP tokens are refreshed once they are 45 minutes old, so long runs stay inside token lifetime within the 180-minute job timeout.
+- The Dataverse managed-solution query no longer uses `$top`, which suppressed `@odata.nextLink` paging.
+- An app install accepted without an operation id now counts in "Update operations triggered".
+- The `VersionUpdate` skip line now reads "no version update (next train) available for 10.0.xx".
+
+### Documentation
+
+- README, `docs/parameters.md`, `docs/setup.md`, `CONTRIBUTING.md` and the pipeline header describe the never-older guard and the bounded `VersionUpdate`. The 2.4.2 statement that "the apply endpoint never downgrades" is replaced: that behaviour has not been verified, so the script no longer relies on it.
+- CONTRIBUTING invariant 6 now says the Anchor Solution may only narrow an apply, never widen it. Invariant 7 adds bounding and "do not rely on unverified platform refusals". New traps: member enumeration on arrays, `$top` with paging.
+
 ## [2.4.2] - 2026-10-06
+
+> **Superseded by 2.4.3.** `VersionUpdate` could jump several trains or pick a non-released build, and multi-version responses could be read as "no versions listed".
 
 ### Fixed
 

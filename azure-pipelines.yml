@@ -30,14 +30,19 @@
 #                                     releaseStage) AND be on the SAME
 #                                     release train as the environment
 #                                     (e.g. 10.0.48.x stays on 10.0.48).
-#                     VersionUpdate - the version must be on a HIGHER
-#                                     release train than the environment.
+#                     VersionUpdate - the version must be on the NEXT
+#                                     release train (current + 1) and be
+#                                     staged GeneralAvailability or
+#                                     QualityUpdate (since v2.4.3).
 #                     Any           - the numerically highest version,
-#                                     no restriction.
+#                                     no train or stage restriction.
 #                   The environment's current release train is read from
 #                   the 3rd segment of the F&O Provisioning App Anchor
 #                   Solution version. If it cannot be determined, the
 #                   apply is SKIPPED (fail-safe) unless the scope is Any.
+#                   In EVERY scope, a version at or below the Anchor
+#                   Solution version is never applied (v2.4.3): the
+#                   Anchor lags the live build but never leads it.
 #                   WARNING: v2.4.0 and v2.4.1 checked releaseStage only.
 #                   releaseStage describes the build itself, not its
 #                   relation to the environment, so a QualityUpdate on a
@@ -124,7 +129,7 @@ parameters:
       - 'false'
 
   - name: finOpsUpdateScope
-    displayName: 'F&O update scope (QualityUpdate = PQU on the same release train, VersionUpdate = higher release train, Any = highest regardless)'
+    displayName: 'F&O update scope (QualityUpdate = PQU on the same release train, VersionUpdate = next release train only, Any = highest regardless)'
     type: string
     default: useLibraryOrDefault
     values:
