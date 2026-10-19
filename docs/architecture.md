@@ -88,7 +88,7 @@ GitHub Actions:
 
 ![Results board in the GitHub Actions log](images/log-github.png)
 
-The **run summary** (Azure DevOps Extensions tab, GitHub job summary) opens with counters and one A to Z list with the same statuses:
+The **run summary** (Azure DevOps Extensions tab, GitHub job summary) opens with counters and one A to Z list with the same statuses. Each stage adds its own section: **1. Plan - what was found and decided** has the full inventory (every environment, held production updates, Finance and Operations); **2. Apply non-production** and **3. Apply production - what was started** list only what that stage did.
 
 ![Run summary with counters, the A to Z results list, needs attention, environments and Finance and Operations](images/run-summary.png)
 
