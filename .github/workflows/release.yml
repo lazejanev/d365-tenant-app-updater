@@ -14,7 +14,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check the tag matches the module version
         id: version
         shell: pwsh
@@ -50,9 +50,18 @@ jobs:
           cp -r scripts src pipelines docs azure-pipelines.yml sync-from-github.yml README.md CHANGELOG.md LICENSE "dist/$name/"
           mkdir -p "dist/$name/.github/workflows" && cp .github/workflows/tenant-app-updater.yml "dist/$name/.github/workflows/"
           (cd dist && zip -qr "$name.zip" "$name")
-      - name: Create the release
+      - name: Create the release, or attach the package to the existing one
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' "dist/d365-tenant-app-updater-${{ steps.version.outputs.version }}.zip" \
-            --title 'v${{ steps.version.outputs.version }}' --notes-file release-notes.md --verify-tag
+          zip="dist/d365-tenant-app-updater-${{ steps.version.outputs.version }}.zip"
+          # A release made in the GitHub web UI creates the tag too, which
+          # starts this workflow. Keep that release's title and notes and
+          # only attach (or replace) the package.
+          if gh release view '${{ github.ref_name }}' >/dev/null 2>&1; then
+            gh release upload '${{ github.ref_name }}' "$zip" --clobber
+            echo "Release ${{ github.ref_name }} already exists: package attached, title and notes kept."
+          else
+            gh release create '${{ github.ref_name }}' "$zip" \
+              --title 'v${{ steps.version.outputs.version }}' --notes-file release-notes.md --verify-tag
+          fi
