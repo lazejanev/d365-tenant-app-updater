@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/lazejanev/d365-tenant-app-updater/security/advisories/new
+    about: Report a security problem privately, not as a public issue.
+  - name: Setup help
+    url: https://github.com/lazejanev/d365-tenant-app-updater/blob/main/docs/setup-azure-devops.md
+    about: Most setup questions are answered in the setup guides and their troubleshooting tables.
