@@ -82,6 +82,28 @@ Describe 'Run summary (summary.md)' {
         $r.Summary | Should -Not -Match '<sub>'
     }
 
+    It 'aligns columns and says no for environments without F&O' {
+        New-MixedTenant
+        $r = Invoke-TestRun -Mode Plan
+        $r.Summary | Should -Match ([regex]::Escape('| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |'))
+        $r.Summary | Should -Match '\| Dev2 \| NonProduction \| 1 \| 0 \| 1 \| 0 \| 0 \| no \|'
+        $r.Summary | Should -Not -Match '\| --- \|'
+    }
+
+    It 'names each stage summary on the Azure DevOps run page' {
+        Reset-TestModuleState -HostKind AzureDevOps
+        New-MixedTenant
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ('d365tau-' + [guid]::NewGuid().ToString('N'))
+        $p = Invoke-TestRun -Mode Plan -OutputDirectory $dir
+        $p.Output | Should -Match ([regex]::Escape('1. Plan - what was found and decided.md'))
+        $a = Invoke-TestRun -Mode Apply -Ring NonProduction -PlanFile (Join-Path $dir 'plan.json')
+        $a.Output | Should -Match ([regex]::Escape('2. Apply non-production - what was started.md'))
+        # The Apply summary reports what it did; the inventory stays in the Plan summary.
+        $a.Summary | Should -Not -Match 'Environments \(A'
+        $a.Summary | Should -Match 'in the \*\*Plan\*\* summary'
+        @(Get-ChildItem $a.Dir -Filter '*.md').Name | Should -Be @('summary.md')
+    }
+
     It 'says so when there is nothing to update' {
         Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '1.0' '1.0'))))
         $r = Invoke-TestRun

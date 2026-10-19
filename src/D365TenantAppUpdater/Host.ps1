@@ -116,11 +116,29 @@ function Set-RunOutput {
 }
 
 function Publish-RunSummary {
-    # Shows the markdown summary on the run page.
-    param([string] $MarkdownPath)
+    # Shows the markdown summary on the run page. Azure DevOps names the
+    # section after the file, so a titled copy is uploaded (summary.md stays
+    # the artifact name).
+    param([string] $MarkdownPath, [string] $Title = '')
     if (-not (Test-Path $MarkdownPath)) { return }
     switch (Get-HostKind) {
-        'AzureDevOps' { Write-Host "##vso[task.uploadsummary]$((Resolve-Path $MarkdownPath).Path)" }
+        'AzureDevOps' {
+            $upload = (Resolve-Path $MarkdownPath).Path
+            if ($Title) {
+                # Outside the output directory, so the artifact keeps one summary.
+                $tmp = $env:AGENT_TEMPDIRECTORY
+                if (-not $tmp) { $tmp = [System.IO.Path]::GetTempPath() }
+                $dir = Join-Path $tmp ('d365-summary-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+                $titled = Join-Path $dir ($Title + '.md')
+                try {
+                    $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop
+                    Copy-Item -LiteralPath $upload -Destination $titled -Force -ErrorAction Stop
+                    $upload = $titled
+                }
+                catch { }
+            }
+            Write-Host "##vso[task.uploadsummary]$upload"
+        }
         'GitHub'      { if ($env:GITHUB_STEP_SUMMARY) { Get-Content -Path $MarkdownPath -Raw | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 } }
         default       { }
     }

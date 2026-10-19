@@ -10,10 +10,18 @@ function ConvertTo-MdCell {
 }
 
 function ConvertTo-MdTable {
-    param([string[]] $Headers, $Rows, [scriptblock[]] $Cells)
+    # -Align: one letter per column, L (default), C or R. Explicit
+    # alignment keeps headers over their values: Azure DevOps centres
+    # headers of unaligned columns but left-aligns the cells.
+    param([string[]] $Headers, $Rows, [scriptblock[]] $Cells, [string] $Align = '')
     $out = @()
     $out += '| ' + ($Headers -join ' | ') + ' |'
-    $out += '|' + (($Headers | ForEach-Object { ' --- ' }) -join '|') + '|'
+    $marks = for ($i = 0; $i -lt $Headers.Count; $i++) {
+        $a = 'L'
+        if ($i -lt $Align.Length) { $a = [string]$Align[$i] }
+        switch ($a) { 'R' { ' ---: ' } 'C' { ' :---: ' } default { ' :--- ' } }
+    }
+    $out += '|' + ($marks -join '|') + '|'
     foreach ($r in $Rows) {
         $vals = foreach ($c in $Cells) { ConvertTo-MdCell (& $c $r) }
         $out += '| ' + ($vals -join ' | ') + ' |'
@@ -38,8 +46,9 @@ function Get-EnvironmentRows {
         $status = 'ok'
         if ($st -and $st.PackagesError) { $status = 'packages unavailable' }
         elseif ($st -and $st.SolutionsError) { $status = 'solutions unavailable' }
-        $fo = ''
+        $fo = 'no'
         if ($st -and $st.FinOpsMarker) { $fo = 'yes' }
+        elseif (-not $st -or $st.SolutionsError) { $fo = '' }
         $rows += [pscustomobject]@{
             Environment = $e.DisplayName; EnvironmentId = $e.Id; Ring = $e.Ring; Type = $e.Sku
             Updates = (Get-Count $a)
@@ -205,6 +214,20 @@ function Write-ResultsBoard {
     }
 }
 
+function Get-SummaryTitle {
+    # The section name on the run page (Azure DevOps shows the file name).
+    param($Context)
+    switch ($Context.Mode) {
+        'Plan' { return '1. Plan - what was found and decided' }
+        'Apply' {
+            if ($Context.Ring -eq 'Production') { return '3. Apply production - what was started' }
+            if ($Context.Ring -eq 'NonProduction') { return '2. Apply non-production - what was started' }
+            return '2. Apply - what was started'
+        }
+        default { return 'Results' }
+    }
+}
+
 function Write-RunReport {
     <#
     .SYNOPSIS
@@ -280,15 +303,22 @@ function Write-RunReport {
         }
         $md += ''
     }
-    if ((Get-Count $envRows) -gt 0) {
+    # An Apply stage reports what it did; the full inventory is in the Plan
+    # summary of the same run.
+    $isApplyStage = $Context.Mode -eq 'Apply'
+    if ($isApplyStage) {
+        $md += '_The inventory of every environment and Finance and Operations is in the **Plan** summary of this run._'
+        $md += ''
+    }
+    if ((Get-Count $envRows) -gt 0 -and -not $isApplyStage) {
         $md += '### Environments (A–Z)'
-        $md += ConvertTo-MdTable -Headers @('', 'Environment', 'Ring', 'Updates', 'Held', 'Up to date', 'Excluded', 'No match', 'F&O') -Rows $envRows -Cells @(
+        $md += ConvertTo-MdTable -Align 'CLLCCCCCC' -Headers @('', 'Environment', 'Ring', 'Updates', 'Held', 'Up to date', 'Excluded', 'No match', 'F&O') -Rows $envRows -Cells @(
             { if ($args[0].Status -ne 'ok') { '❌' } elseif ($args[0].Updates -gt 0) { '🔄' } elseif ($args[0].Held -gt 0) { '⏸️' } else { '✔️' } },
             { if ($args[0].Status -ne 'ok') { "$($args[0].Environment) – $($args[0].Status)" } else { $args[0].Environment } },
             { $args[0].Ring }, { $args[0].Updates }, { $args[0].Held }, { $args[0].UpToDate }, { $args[0].Excluded }, { $args[0].NoMatch }, { $args[0].FinOps })
         $md += ''
     }
-    if ((Get-Count $foRows) -gt 0) {
+    if ((Get-Count $foRows) -gt 0 -and -not $isApplyStage) {
         $md += '### Finance and Operations'
         $md += ConvertTo-MdTable -Headers @('Environment', 'Ring', 'Application', 'Train', 'Deployment', 'Maintenance', 'Offered') -Rows $foRows -Cells @({ $args[0].Environment }, { $args[0].Ring }, { $args[0].Application }, { $args[0].Train }, { $args[0].Deployment }, { (@($args[0].MaintenanceCadence, $args[0].MaintenanceDays) | Where-Object { $_ }) -join ' ' }, { $args[0].Offered })
         if ((Get-Count $foSkips) -gt 0) {
@@ -321,7 +351,7 @@ function Write-RunReport {
     }
     $report | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $dir 'report.json') -Encoding utf8
 
-    Publish-RunSummary -MarkdownPath $mdPath
+    Publish-RunSummary -MarkdownPath $mdPath -Title (Get-SummaryTitle -Context $Context)
     Write-Line ''
     Write-Line "Reports: $mdPath, $(Join-Path $dir 'report.json')"
     return $result

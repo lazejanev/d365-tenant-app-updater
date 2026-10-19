@@ -47,7 +47,7 @@ Major version: production is held back by default, and the run is split into Pla
 - **Run summary on the run page** (Azure DevOps Extensions tab, GitHub job summary) and `report.json`, published as artifacts with `plan.json`.
 - **A to Z everywhere**: environments and apps are processed and listed alphabetically: case-insensitive, numbers in numeric order (Dev2 before Dev10), `-`, `_`, `.` and spaces treated alike, and the same order on every agent and locale (ordinal comparison, not culture rules). Non-production is applied before production.
 - **Results board**: the log ends with every environment A to Z and one colour-coded, tagged line per app (`[UPDATED]`, `[RUNNING]`, `[PLANNED]`, `[HELD]`, `[FAILED]`, ...), coloured with Azure DevOps formatting, ANSI on GitHub, and console colours locally. Production lines say which non-production environment proved the version.
-- **Run summary redesign**: counters first, then one A to Z list with a status icon per row, Needs attention, environments, and F&O.
+- **Run summary redesign**: counters first, then one A to Z list with a status icon per row, Needs attention, environments, and F&O. Each stage has a named section (1. Plan, 2. Apply non-production, 3. Apply production); the inventory is shown once, in Plan. Number columns are centred and F&O says yes or no.
 - **Architecture diagrams**: [docs/architecture.md](docs/architecture.md) with seven diagrams (system context, pipeline stages, production ring, module, app decision, F&O decision, sign-in), Mermaid sources in `docs/diagrams/`, and screenshots of the log and run summary.
 - F&O inventory shows each environment's **maintenance window** (`finopsadminsettings`).
 - `failOnIssues`: fail the run (exit code 1) instead of finishing with issues.
