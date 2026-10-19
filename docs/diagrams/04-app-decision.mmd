@@ -1,10 +1,12 @@
 flowchart TD
     A["App package offered<br/>for an environment"] --> B{"Installed in this<br/>environment?"}
     B -- "no (never installs new apps)" --> SKIP1["Skip"]
-    B -- "install failed before" --> RETRY["Retry candidate"]
+    B -- "install failed before<br/>(retryFailedInstalls)" --> C
     B -- yes --> C{"In appExclude?"}
     C -- yes --> SKIP2["Skip: excluded"]
-    C -- no --> D{"Installed version known<br/>(managed solution in Dataverse)?"}
+    C -- no --> R{"Retry of a<br/>failed install?"}
+    R -- yes --> RETRY["Retry candidate"]
+    R -- no --> D{"Installed version known<br/>(managed solution in Dataverse)?"}
     D -- no --> SKIP3["Skip: no match<br/>never installs blindly"]
     D -- yes --> F{"Available strictly newer<br/>than installed?"}
     F -- no --> CUR["Up to date<br/>never downgrades"]

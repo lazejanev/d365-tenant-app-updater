@@ -215,3 +215,69 @@ Describe 'Apps that mention Finance and Operations' {
         @($r.Plan.actions | ForEach-Object AppUniqueName) | Should -Be @('msdyn_FnOCopilotAnchor')
     }
 }
+
+Describe 'Apply re-checks settings that changed after the plan' {
+    BeforeEach {
+        Reset-TestModuleState
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { Invoke-FakeRequest @PesterBoundParameters }
+        $script:Dir = Join-Path ([IO.Path]::GetTempPath()) ('d365tau-' + [guid]::NewGuid().ToString('N'))
+        $script:PlanPath = Join-Path $script:Dir 'plan.json'
+    }
+
+    It 'stops an F&O apply when finOpsUpdateScope changed' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'fo' -Name 'FO Dev' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'UnifiedDeveloper' -FinOpsVersions '[{"version":"10.0.49.3","releaseStage":"GeneralAvailability"}]'))
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir -Setting @{ FinOpsApplyVersion = 'true'; FinOpsUpdateScope = 'VersionUpdate' }
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ FinOpsApplyVersion = 'true'; FinOpsUpdateScope = 'QualityUpdate' }
+        @(Get-FakeCalls 'POST */finopsversions/*/apply*') | Should -HaveCount 0
+        $r.Report.results[0].Result | Should -Be 'Stopped'
+        $r.Report.results[0].Detail | Should -Match 'finOpsUpdateScope changed since the plan'
+    }
+
+    It 'stops a retry when retryFailedInstalls was turned off' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '' -State 'InstallFailed'))))
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir
+        $global:FakeTenant.Calls.Clear()
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ RetryFailedInstalls = 'false' }
+        Get-InstallCalls | Should -HaveCount 0
+        $r.Report.results[0].Result | Should -Be 'Stopped'
+    }
+
+    It 'stops an update for an environment that is now production' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'trn' -Name 'Training' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))))
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir
+        $global:FakeTenant.Calls.Clear()
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ ProductionEnvironments = 'Training' }
+        Get-InstallCalls | Should -HaveCount 0
+        $r.Report.results[0].Detail | Should -Match 'now production'
+    }
+
+    It 'applies appExclude by application id, not only by name' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))))
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir
+        $global:FakeTenant.Calls.Clear()
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath -Setting @{ AppExclude = 'app-msdyn_a' }
+        Get-InstallCalls | Should -HaveCount 0
+        $r.Report.results[0].Result | Should -Be 'Stopped'
+    }
+
+    It 'does not install over an app whose installed version can no longer be read' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))))
+        $null = Invoke-TestRun -Mode Plan -OutputDirectory $script:Dir
+        $global:FakeTenant.Environments[0].Apps[0].Installed = ''
+        $global:FakeTenant.Calls.Clear()
+        $r = Invoke-TestRun -Mode Apply -PlanFile $script:PlanPath
+        Get-InstallCalls | Should -HaveCount 0
+        $r.Report.results[0].Result | Should -Be 'Stale'
+    }
+}
+
+Describe 'whatIf means Plan only' {
+    It 'tells the pipeline there is nothing to apply' {
+        Reset-TestModuleState -HostKind AzureDevOps
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { Invoke-FakeRequest @PesterBoundParameters }
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'))))
+        $r = Invoke-TestRun -Mode Plan -Setting @{ WhatIf = 'true' }
+        $r.Output | Should -Match ([regex]::Escape('hasNonProductionActions;isOutput=true]false'))
+        $r.Output | Should -Match 'Apply stages are skipped'
+    }
+}

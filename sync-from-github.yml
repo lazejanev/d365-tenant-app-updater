@@ -9,8 +9,16 @@
 #                    version such as v3.0.0). <-- DEFAULT, recommended
 #   main           : the newest commit on GitHub main (may be unreleased).
 #
+# Your own pipeline settings survive the sync. With the default reset
+# strategy these edits are carried over to every new version:
+#   - the default of productionApprovalEnvironment (azure-pipelines.yml and
+#     pipelines/azure-pipelines-federated.yml)
+#   - an uncommented schedules: block in those two files
+#   - the serviceConnection variable of the federated pipeline
+# Any other local change is replaced by the released file.
+#
 # Prerequisites (one-time):
-#   1. Repo Settings -> Repositories -> your repo -> Security:
+#   1. Project settings -> Repositories -> your repo -> Security:
 #      Grant "<Project> Build Service (<Org>)" the "Contribute" permission.
 #      For the default RESET strategy also grant "Force push (rewrite history
 #      and delete refs)".
@@ -69,9 +77,16 @@ steps:
 
       source_ref="github/$(targetBranch)"
       if [ "$(syncRef)" = "latest-release" ]; then
-        tag=$(curl -fsSL -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/$(githubRepo)/releases/latest" \
-          | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" || true)
+        # github.com/<repo>/releases/latest redirects to the latest release's
+        # tag page. Unlike the GitHub API it is not rate limited per agent IP.
+        tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+          "https://github.com/$(githubRepo)/releases/latest" 2>/dev/null \
+          | sed -n 's#.*/releases/tag/##p' || true)
+        if [ -z "$tag" ]; then
+          tag=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$(githubRepo)/releases/latest" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name',''))" || true)
+        fi
         if [ -n "$tag" ] && git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
           echo "Latest GitHub release: $tag"
           source_ref="refs/tags/$tag"
@@ -89,10 +104,18 @@ steps:
       # exists on two remotes (origin + github). Be explicit: create a local
       # branch that tracks origin so the name is never ambiguous.
       git checkout -B "$(targetBranch)" "origin/$(targetBranch)"
+      before=$(git rev-parse HEAD)
 
       if [ "$(syncStrategy)" = "reset" ]; then
-        echo "Strategy: reset (mirror GitHub exactly)"
+        echo "Strategy: reset (mirror GitHub, keep your pipeline settings)"
         git reset --hard "$source_ref"
+        if [ -f scripts/sync_keep_settings.py ]; then
+          python3 scripts/sync_keep_settings.py "$before"
+          if ! git diff --quiet; then
+            git commit -qam "Keep local pipeline settings (approval environment, schedule, service connection)"
+            echo "Committed your pipeline settings on top of $source_ref."
+          fi
+        fi
       else
         echo "Strategy: ff-only (safe fast-forward)"
         git merge --ff-only "$source_ref"
@@ -107,7 +130,7 @@ steps:
         git push origin --tags --force
       else
         git push origin "HEAD:$(targetBranch)"
-        git push origin --tags
+        git push origin --tags --force
       fi
       echo "Sync complete."
     displayName: 'Push to Azure DevOps'

@@ -97,7 +97,7 @@ function Invoke-FakeRequest {
     if ($u -match '/appmanagement/environments/([^/]+)/applicationPackages') {
         $e = Get-FakeEnvById $Matches[1]
         if ($e.PackagesStatus -ne 200) { return New-FakeResponse -Status $e.PackagesStatus -Body @{ error = @{ code = 'Boom'; message = 'packages failed' } } }
-        $pk = @(foreach ($a in $e.Apps) { @{ uniqueName = $a.UniqueName; localizedName = $a.Name; applicationName = $a.Name; state = $a.State; version = $a.Available } })
+        $pk = @(foreach ($a in $e.Apps) { @{ uniqueName = $a.UniqueName; localizedName = $a.Name; applicationName = $a.Name; applicationId = "app-$($a.UniqueName)"; state = $a.State; version = $a.Available } })
         if ($e.FinOpsBuild) { $pk += @{ uniqueName = 'msdyn_FinanceAndOperationsProvisioningAppAnchor'; localizedName = 'Finance and Operations Provisioning App'; state = 'Installed'; version = '10.0.99.1' } }
         return New-FakeResponse -Body @{ value = $pk }
     }

@@ -7,7 +7,7 @@
     Thin entry point for Azure DevOps, GitHub Actions and local runs. All
     logic lives in the D365TenantAppUpdater module (src/).
 
-    Collect -> plan -> apply -> wait -> report:
+    Collect -> plan -> apply -> (optional wait, waitForInstallsMinutes > 0) -> report:
       Phase 1  Dynamics 365 apps. Only apps already installed in an
                environment are updated, and only to a strictly newer version.
       Phase 2  Finance and Operations. Inventory always; version apply only

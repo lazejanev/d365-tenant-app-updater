@@ -85,9 +85,33 @@ Describe 'Run summary (summary.md)' {
     It 'aligns columns and says no for environments without F&O' {
         New-MixedTenant
         $r = Invoke-TestRun -Mode Plan
-        $r.Summary | Should -Match ([regex]::Escape('| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |'))
-        $r.Summary | Should -Match '\| Dev2 \| NonProduction \| 1 \| 0 \| 1 \| 0 \| 0 \| no \|'
+        # Held shows (Prod holds an app); Excluded and No match are 0 everywhere, so hidden.
+        $r.Summary | Should -Match ([regex]::Escape('| :---: | :--- | :--- | :---: | :---: | :---: | :---: |'))
+        $r.Summary | Should -Match ([regex]::Escape('|  | Environment | Ring | Updates | Held | Up to date | F&O |'))
+        $r.Summary | Should -Match '\| Dev2 \| NonProduction \| 1 \| 0 \| 1 \| no \|'
         $r.Summary | Should -Not -Match '\| --- \|'
+    }
+
+    It 'shows Excluded and No match only when an environment has one' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'A' '2.0' '1.0'), (New-FakeApp 'msdyn_x' 'X' '2.0' '1.0'), (New-FakeApp 'msdyn_n' 'N' '2.0' ''))))
+        $r = Invoke-TestRun -Mode Plan -Setting @{ AppExclude = 'msdyn_x' }
+        $r.Summary | Should -Match ([regex]::Escape('|  | Environment | Ring | Updates | Up to date | Excluded | No match | F&O |'))
+    }
+
+    It 'shows a retry of a failed install as Retry, without an installed version' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'e' -Name 'E' -Apps @((New-FakeApp 'msdyn_a' 'Agent' '2.0' '' -State 'InstallFailed'))))
+        $r = Invoke-TestRun -Mode Plan
+        $r.Summary | Should -Match '\| 🔁 Retry planned \| E \| NonProduction \| Agent \|   \| 2\.0 \| Last install failed in Power Platform'
+        $r.Output | Should -Match '\[RETRY  \] Agent'
+        $r.Report.counts.Planned | Should -Be 1
+    }
+
+    It 'gives every F&O environment a status in the table instead of a list under it' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'fo' -Name 'FO' -FinOpsBuild '10.0.2645.136' -FinOpsDeployment 'LCSSandbox'))
+        $r = Invoke-TestRun -Mode Plan -Setting @{ FinOpsApplyVersion = 'true' }
+        $r.Summary | Should -Match '\| FO \| NonProduction \| 10\.0\.2645\.136 \|.*\| LCS managed \|'
+        $r.Summary | Should -Not -Match '(?m)^- \*\*FO\*\*'
+        $r.Summary | Should -Not -Match 'Offered'
     }
 
     It 'names each stage summary on the Azure DevOps run page' {

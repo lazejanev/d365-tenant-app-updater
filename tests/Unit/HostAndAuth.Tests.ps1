@@ -41,6 +41,33 @@ Describe 'Host adapter' {
     }
 }
 
+Describe 'Annotation text from API errors' {
+    It 'cannot start a logging command of its own' {
+        InModuleScope D365TenantAppUpdater {
+            Set-HostKind 'AzureDevOps'
+            $t = ConvertTo-AnnotationText "boom`n##vso[task.complete result=Failed]x ##[error]y"
+            $t | Should -Not -Match '##vso\['
+            $t | Should -Not -Match '##\['
+            $t | Should -Not -Match "`n"
+            Set-HostKind 'Local'
+        }
+    }
+}
+
+Describe 'F&O provisioning app detection' {
+    It 'matches the provisioning app and nothing that only mentions F&O' -ForEach @(
+        @{ U = 'msdyn_FinanceAndOperationsProvisioningAppAnchor'; E = $true },
+        @{ U = 'msdyn_FnOCopilotAnchor'; E = $false },
+        @{ U = 'msdyn_Dynamics365FinanceAndOperationsCopilotAnchor'; E = $false },
+        @{ U = 'msdyn_Dynamics365FinanceAndOperationsVirtualEntity'; E = $false }
+    ) {
+        InModuleScope D365TenantAppUpdater -Parameters @{ U = $U; E = $E } {
+            param($U, $E)
+            Test-FinOpsProvisioningPackage ([pscustomobject]@{ uniqueName = $U }) | Should -Be $E
+        }
+    }
+}
+
 Describe 'Sign-in' {
     BeforeEach {
         Reset-TestModuleState

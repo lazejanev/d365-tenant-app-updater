@@ -62,7 +62,6 @@ concurrency:
 env:
   D365_CLIENT_ID: ${{ vars.D365_CLIENT_ID }}
   D365_TENANT_ID: ${{ vars.D365_TENANT_ID }}
-  D365_CLIENT_SECRET: ${{ secrets.D365_CLIENT_SECRET }}
   AuthMode: ${{ vars.AUTH_MODE }}
   # Queue-time choices win over repository variables, which win over the
   # built-in defaults. 'useVariableOrDefault' means "not set here".
@@ -95,7 +94,7 @@ env:
 jobs:
   plan:
     name: Plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     outputs:
       hasNonProductionActions: ${{ steps.plan.outputs.hasNonProductionActions }}
@@ -106,6 +105,9 @@ jobs:
         id: plan
         shell: pwsh
         run: ./scripts/Update-TenantApps.ps1 -Mode Plan -OutputDirectory "$env:RUNNER_TEMP/plan"
+        # Only the step that signs in gets the secret.
+        env:
+          D365_CLIENT_SECRET: ${{ secrets.D365_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -117,7 +119,7 @@ jobs:
     name: Apply non-production
     needs: plan
     if: needs.plan.outputs.hasNonProductionActions == 'true' && inputs.whatIf != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
@@ -128,6 +130,9 @@ jobs:
       - name: Apply non-production actions
         shell: pwsh
         run: ./scripts/Update-TenantApps.ps1 -Mode Apply -Ring NonProduction -PlanFile "$env:RUNNER_TEMP/plan/plan.json" -OutputDirectory "$env:RUNNER_TEMP/apply"
+        # Only the step that signs in gets the secret.
+        env:
+          D365_CLIENT_SECRET: ${{ secrets.D365_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -142,7 +147,7 @@ jobs:
       !cancelled() && needs.plan.result == 'success' &&
       needs.plan.outputs.hasProductionActions == 'true' && inputs.whatIf != 'true' &&
       (needs.apply-nonproduction.result == 'success' || needs.apply-nonproduction.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     environment: d365-production
     steps:
@@ -154,6 +159,9 @@ jobs:
       - name: Apply production actions
         shell: pwsh
         run: ./scripts/Update-TenantApps.ps1 -Mode Apply -Ring Production -PlanFile "$env:RUNNER_TEMP/plan/plan.json" -OutputDirectory "$env:RUNNER_TEMP/apply"
+        # Only the step that signs in gets the secret.
+        env:
+          D365_CLIENT_SECRET: ${{ secrets.D365_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

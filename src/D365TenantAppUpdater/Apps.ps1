@@ -95,9 +95,12 @@ function Get-FinOpsMarkerPackage {
 }
 
 function Test-FinOpsProvisioningPackage {
-    # True only for the F&O provisioning app itself (unique-name marker).
+    # True only for the F&O provisioning app itself (unique-name marker),
+    # never for apps that only carry F&O in their name (Copilot, virtual
+    # entities, dual-write).
     param($Pkg)
     $un = ([string]$Pkg.uniqueName).ToLowerInvariant()
+    foreach ($x in @($script:FinOpsNotMarkers) + @('copilot')) { if ($un.Contains($x.Replace(' ', '').Replace('-', ''))) { return $false } }
     foreach ($m in $script:FinOpsMarkers) { if ($un.Contains($m)) { return $true } }
     return $false
 }
@@ -148,9 +151,21 @@ function Get-AppEnvironmentState {
     }
     try {
         $uri = New-PpUrl -Settings $Settings -Path "/appmanagement/environments/$($EnvObj.Id)/applicationPackages" -Query @{ appInstallState = 'All'; lcid = '1033' }
-        $r = Invoke-Http -Method 'GET' -Uri $uri -Headers (Get-PpHeaders $Settings)
-        if (-not (Test-HttpOk $r)) { $state.PackagesError = "$(Format-RestFailure $r). $(Get-ApiErrorMessage $r)" }
-        else { $state.Packages = @($r.Json.value) }
+        $all = @()
+        $pages = 0
+        while ($uri) {
+            $r = Invoke-Http -Method 'GET' -Uri $uri -Headers (Get-PpHeaders $Settings)
+            if (-not (Test-HttpOk $r)) { $state.PackagesError = "$(Format-RestFailure $r). $(Get-ApiErrorMessage $r)"; break }
+            $all += @($r.Json.value)
+            $uri = $null
+            # Follow paging when the API returns it (it has not so far).
+            foreach ($p in @('@odata.nextLink', 'nextLink')) {
+                if ($r.Json -and $r.Json.PSObject.Properties[$p] -and $r.Json.$p) { $uri = [string]$r.Json.$p }
+            }
+            $pages++
+            if ($pages -ge 50) { $uri = $null }
+        }
+        if (-not $state.PackagesError) { $state.Packages = $all }
     }
     catch { $state.PackagesError = Get-ErrorText $_ }
     if ($state.PackagesError) { return $state }
