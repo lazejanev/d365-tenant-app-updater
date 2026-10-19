@@ -51,8 +51,13 @@ function Stop-Group {
 
 function ConvertTo-AnnotationText {
     # Workflow commands end at a newline; keep annotations on one line.
+    # Text from API error bodies must not be able to start a logging command
+    # of its own (##vso[ on Azure DevOps, :: commands on GitHub).
     param([string] $Text)
-    return ($Text -replace "`r?`n", ' ')
+    $t = $Text -replace "`r?`n", ' '
+    $t = $t -replace '##vso\[', '##vso [' -replace '##\[', '## ['
+    if ((Get-HostKind) -eq 'GitHub') { $t = $t -replace '%', '%25' }
+    return $t
 }
 
 function Write-RunWarning {

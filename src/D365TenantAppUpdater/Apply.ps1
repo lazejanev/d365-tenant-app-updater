@@ -93,7 +93,10 @@ function Get-RevalidatedApp {
     if ([string]$pkg.state -eq 'Installed') {
         if ($st.SolutionsError) { return [pscustomobject]@{ Ok = $false; Result = 'Failed'; Detail = "re-check failed: $($st.SolutionsError)"; Package = $null } }
         $inst = Resolve-InstalledApp -Pkg $pkg -Map $st.Solutions
-        if ($inst -and (Test-VersionAtLeast -Version $inst.Version -Minimum $Action.To)) { return [pscustomobject]@{ Ok = $false; Result = 'AlreadyDone'; Detail = "already at $($inst.Version)"; Package = $null } }
+        # Never blind: an installed app whose version can no longer be read
+        # is not installed over.
+        if (-not $inst) { return [pscustomobject]@{ Ok = $false; Result = 'Stale'; Detail = 'the installed version can no longer be read (no matching managed solution)'; Package = $null } }
+        if (Test-VersionAtLeast -Version $inst.Version -Minimum $Action.To) { return [pscustomobject]@{ Ok = $false; Result = 'AlreadyDone'; Detail = "already at $($inst.Version)"; Package = $null } }
     }
     elseif ([string]$pkg.state -ne 'InstallFailed') {
         return [pscustomobject]@{ Ok = $false; Result = 'Stale'; Detail = "app state is now '$($pkg.state)'"; Package = $null }
@@ -153,19 +156,49 @@ function Split-AllowedActions {
     param($Settings, $Actions, $Plan)
     $allowed = @()
     $stopped = @()
+    # Settings the plan was made with (plans written by 3.0.0 builds before
+    # this check have none, and are only checked as before).
+    $snap = $null
+    if ($Plan -and $Plan.PSObject.Properties['settings'] -and $Plan.settings) { $snap = $Plan.settings }
+    $planEnvs = @{}
+    if ($Plan -and $Plan.PSObject.Properties['environments']) { foreach ($e in @($Plan.environments)) { $planEnvs[[string]$e.Id] = $e } }
+    $changed = { param([string] $Name, $Then, $Now)
+        $t = (@($Then) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object) -join ','
+        $n = (@($Now) | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object) -join ','
+        if ($t -ne $n) {
+            $tl = (@($Then) | Where-Object { $_ }) -join ', '; if (-not $tl) { $tl = '(none)' }
+            $nl = (@($Now) | Where-Object { $_ }) -join ', '; if (-not $nl) { $nl = '(none)' }
+            return "$Name changed since the plan ($tl -> $nl)"
+        }
+        return ''
+    }
     foreach ($a in $Actions) {
         $envObj = [pscustomobject]@{ Id = $a.EnvironmentId; DisplayName = $a.EnvironmentName }
         $why = ''
         if (Test-EnvInList -EnvObj $envObj -List $Settings.EnvironmentExclude) { $why = 'environment is now in environmentExclude' }
         elseif ((Get-Count $Settings.EnvironmentFilter) -gt 0 -and -not (Test-EnvInList -EnvObj $envObj -List $Settings.EnvironmentFilter)) { $why = 'environment is no longer in environmentFilter' }
         elseif ($a.Phase -eq 'Apps') {
-            $pkgLike = [pscustomobject]@{ uniqueName = $a.AppUniqueName; localizedName = $a.AppName; applicationName = ''; applicationId = '' }
+            $pkgLike = $a.Package
+            if (-not $pkgLike) { $pkgLike = [pscustomobject]@{ uniqueName = $a.AppUniqueName; localizedName = $a.AppName; applicationName = ''; applicationId = '' } }
             $ex = Test-AppExcluded -Pkg $pkgLike -List $Settings.AppExclude
             if ($ex.Excluded) { $why = "app is now in appExclude ('$($ex.By)')" }
+            elseif ($a.Kind -eq 'AppRetry' -and -not $Settings.RetryFailedInstalls) { $why = 'retryFailedInstalls is now false' }
         }
         else {
             if (-not $Settings.FinOpsApplyVersion) { $why = 'finOpsApplyVersion is now false' }
             elseif ((Get-Count $Settings.FinOpsEnvironmentFilter) -gt 0 -and -not (Test-EnvInList -EnvObj $envObj -List $Settings.FinOpsEnvironmentFilter)) { $why = 'environment is no longer in finOpsEnvironmentFilter' }
+            elseif ($snap) {
+                $why = & $changed 'finOpsUpdateScope' $snap.finOpsUpdateScope $Settings.FinOpsUpdateScope
+                if (-not $why) { $why = & $changed 'finOpsTargetVersion' $snap.finOpsTargetVersion $Settings.FinOpsTargetVersion }
+                if (-not $why) { $why = & $changed 'finOpsDeploymentTypes' $snap.finOpsDeploymentTypes $Settings.FinOpsDeploymentTypes }
+            }
+        }
+        # An environment that the current settings make production, but that
+        # was planned as non-production, has not been proven.
+        if (-not $why -and $snap -and $a.Ring -eq 'NonProduction' -and $Settings.ProductionRing -and $planEnvs.ContainsKey([string]$a.EnvironmentId)) {
+            $pe = $planEnvs[[string]$a.EnvironmentId]
+            $nowRing = Get-EnvironmentRing -EnvObj ([pscustomobject]@{ Id = $pe.Id; DisplayName = $pe.DisplayName; Sku = $pe.Sku }) -Settings $Settings
+            if ($nowRing -eq 'Production' -and ([string]$pe.Sku)) { $why = 'the environment is now production (productionEnvironments or productionEnvironmentTypes changed), so the update needs proof first' }
         }
         if (-not $why -and $a.Ring -eq 'Production' -and $Settings.ProductionRing -and $Plan.PSObject.Properties['productionRing'] -and -not $Plan.productionRing) {
             $why = 'productionRing is now on, but the plan was made without it (not proven)'

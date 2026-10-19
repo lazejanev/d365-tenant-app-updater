@@ -85,6 +85,8 @@ $script:StatusStyle = [ordered]@{
     Updated   = @{ Tag = 'UPDATED'; Color = 'Green';   Icon = '✅'; Group = 'Updated';    Label = 'Updated' }
     Started   = @{ Tag = 'RUNNING'; Color = 'Blue';    Icon = '⏳'; Group = 'InProgress'; Label = 'In progress' }
     TimedOut  = @{ Tag = 'RUNNING'; Color = 'Blue';    Icon = '⏳'; Group = 'InProgress'; Label = 'Still running' }
+    RetryPlanned = @{ Tag = 'RETRY'; Color = 'Blue';   Icon = '🔁'; Group = 'Planned';    Label = 'Retry planned' }
+    RetryStarted = @{ Tag = 'RETRY'; Color = 'Blue';   Icon = '🔁'; Group = 'InProgress'; Label = 'Retry started' }
     Planned   = @{ Tag = 'PLANNED'; Color = 'Blue';    Icon = '🗓️'; Group = 'Planned';    Label = 'Planned' }
     Held      = @{ Tag = 'HELD';    Color = 'Magenta'; Icon = '⏸️'; Group = 'Held';       Label = 'Held for production' }
     Done      = @{ Tag = 'CURRENT'; Color = 'Green';   Icon = '✔️'; Group = 'UpToDate';   Label = 'Already current' }
@@ -95,6 +97,8 @@ $script:StatusStyle = [ordered]@{
     Failed    = @{ Tag = 'FAILED';  Color = 'Red';     Icon = '❌'; Group = 'Failed';     Label = 'Failed' }
     Error     = @{ Tag = 'ERROR';   Color = 'Red';     Icon = '❌'; Group = 'Failed';     Label = 'Could not read' }
 }
+
+$script:RetryNote = 'Last install failed in Power Platform. If it keeps failing, install it from the admin center.'
 
 function Get-BoardRows {
     <#
@@ -118,6 +122,10 @@ function Get-BoardRows {
             $note = $r.Detail
             if ($st -eq 'Planned') { $note = 'whatIf: re-checked, not applied' }
             if ($r.OperationId -and $st -eq 'Started') { $note = "$note (operation $($r.OperationId))" }
+            if ($r.Kind -eq 'AppRetry' -and $st -in @('Started', 'Planned')) {
+                $st = @{ Started = 'RetryStarted'; Planned = 'RetryPlanned' }[$st]
+                $note = (@($note, $script:RetryNote) | Where-Object { $_ }) -join ' · '
+            }
             if ($r.PSObject.Properties['Reason'] -and $r.Reason -and $st -in @('Updated', 'Started', 'Planned')) { $note = "$note · proven: $($r.Reason)" }
             $rows += & $new $r $st $note
         }
@@ -126,9 +134,13 @@ function Get-BoardRows {
         foreach ($a in $Context.Actions) {
             $note = ''
             if ($a.Reason) { $note = "proven: $($a.Reason)" }
-            $rows += & $new $a 'Planned' $note
+            $st = 'Planned'
+            if ($a.Kind -eq 'AppRetry') { $st = 'RetryPlanned'; $note = (@($note, $script:RetryNote) | Where-Object { $_ }) -join ' · ' }
+            $rows += & $new $a $st $note
         }
     }
+    # A retry has no installed version to show: the last install failed.
+    foreach ($row in $rows) { if ($row.Status -like 'Retry*') { $row.From = '' } }
     foreach ($d in $Context.Decisions) {
         if ($d.Code -eq 'HeldForProduction' -and ($Context.Ring -eq 'All' -or $Context.Ring -eq 'Production')) {
             $rows += & $new $d 'Held' ([string]$d.Reason -replace '^held for production: ', '')
@@ -148,11 +160,18 @@ function Get-BoardRows {
     return @(Sort-ByEnvironment $rows)
 }
 
+function Get-RingItems {
+    # An Apply stage for one ring reports that ring only.
+    param($Context, $Items)
+    if (-not $Context.Ring -or $Context.Ring -eq 'All') { return @($Items) }
+    return @($Items | Where-Object { $_.Ring -eq $Context.Ring })
+}
+
 function Get-StatusCounts {
     param($Rows, $Context)
     $c = [ordered]@{ Updated = 0; InProgress = 0; Planned = 0; Held = 0; Attention = 0; Failed = 0; UpToDate = 0 }
     foreach ($r in $Rows) { $c[$script:StatusStyle[$r.Status].Group]++ }
-    $c.UpToDate += Get-Count @($Context.Decisions | Where-Object { $_.Code -eq 'UpToDate' })
+    $c.UpToDate += Get-Count @(Get-RingItems -Context $Context -Items $Context.Decisions | Where-Object { $_.Code -eq 'UpToDate' })
     return $c
 }
 
@@ -184,7 +203,7 @@ function Write-ResultsBoard {
     }
     if ((Get-Count $parts) -eq 0) { $parts = @('nothing to do') }
     Write-Line ("{0} environment(s) · {1}" -f (Get-Count $Context.Environments), ($parts -join ' · '))
-    Write-Line 'Legend: [UPDATED] [CURRENT] green · [RUNNING] [PLANNED] blue · [HELD] purple · [CHANGED] [STOPPED] [MANUAL] [ADMIN] yellow · [FAILED] [ERROR] red'
+    Write-Line 'Legend: [UPDATED] [CURRENT] green · [RUNNING] [PLANNED] [RETRY] blue · [HELD] purple · [CHANGED] [STOPPED] [MANUAL] [ADMIN] yellow · [FAILED] [ERROR] red'
 
     $appWidth = 24
     foreach ($r in $Rows) { if ($r.AppName.Length -gt $appWidth) { $appWidth = [Math]::Min($r.AppName.Length, 40) } }
@@ -214,6 +233,24 @@ function Write-ResultsBoard {
     }
 }
 
+function Get-FinOpsStatusMap {
+    # One short status per F&O environment, from the plan's decisions and
+    # (after an apply) the results. EnvironmentId -> text.
+    param($Context)
+    $map = @{}
+    $short = @{ NoVersions = 'No newer version'; InventoryOnly = 'Inventory only'; RouteNotFound = 'Versions route unavailable' }
+    foreach ($d in @($Context.Decisions | Where-Object Phase -eq 'FinOps')) {
+        $t = [string]$d.Reason
+        if ($short.ContainsKey([string]$d.Code)) { $t = $short[[string]$d.Code] }
+        elseif ($d.Code -eq 'NotEligible') { $t = ($t -replace '^LCS managed \(.*\)$', 'LCS managed') }
+        elseif ($d.Code -eq 'HeldForProduction') { $t = "Held: $($d.To) ($($t -replace '^held for production: ', ''))" }
+        $map[[string]$d.EnvironmentId] = $t
+    }
+    foreach ($a in @($Context.Actions | Where-Object Phase -eq 'FinOps')) { $map[[string]$a.EnvironmentId] = "Planned: $($a.To)" }
+    foreach ($r in @($Context.Results | Where-Object Phase -eq 'FinOps')) { $map[[string]$r.EnvironmentId] = "$($r.Result): $($r.To)" }
+    return $map
+}
+
 function Get-SummaryTitle {
     # The section name on the run page (Azure DevOps shows the file name).
     param($Context)
@@ -238,11 +275,14 @@ function Write-RunReport {
     param($Settings, $Context)
     $result = Get-RunResult -Context $Context
     $dir = $Context.OutputDirectory
-    if (-not (Test-Path $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+    # A report that cannot be written is an issue, never a crash: the exit
+    # code is still decided by Complete-Run.
+    $writeFailed = ''
+    try { if (-not (Test-Path $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop } }
+    catch { $writeFailed = Get-ErrorText $_ }
 
     $actions = Sort-ByEnvironment $Context.Actions
     $results = Sort-ByEnvironment $Context.Results
-    $foSkips = Sort-ByEnvironment @($Context.Decisions | Where-Object { $_.Phase -eq 'FinOps' -and $_.Outcome -eq 'Skip' -and $_.Code -ne 'HeldForProduction' })
     $envRows = @(Get-EnvironmentRows -Context $Context)
     $foRows = @()
     if ($Context.FinOpsStates) { $foRows = @(Get-FinOpsInventoryRows -States $Context.FinOpsStates) }
@@ -267,7 +307,7 @@ function Write-RunReport {
     $md = @()
     $md += "## $resultIcon d365-tenant-app-updater $($Context.Version) · $result"
     $md += ''
-    $md += "**$($Context.Mode)** · ring **$($Context.Ring)** · $hostName · $((Get-Now).ToString('yyyy-MM-dd HH:mm')) UTC · $((Get-Count $Context.Environments)) environment(s)"
+    $md += "**$($Context.Mode)** · ring **$($Context.Ring)** · $hostName · $((Get-Now).ToString('yyyy-MM-dd HH:mm')) UTC · $((Get-Count (Get-RingItems -Context $Context -Items $Context.Environments))) environment(s)"
     if ($Settings.PlanOnly) { $md += ''; $md += '> **whatIf is on: nothing was changed.**' }
     $md += ''
     $md += '| ✅ Updated | ⏳ In progress | 🗓️ Planned | ⏸️ Held for production | ⚠️ Needs attention | ❌ Failed | ✔️ Up to date |'
@@ -312,19 +352,39 @@ function Write-RunReport {
     }
     if ((Get-Count $envRows) -gt 0 -and -not $isApplyStage) {
         $md += '### Environments (A–Z)'
-        $md += ConvertTo-MdTable -Align 'CLLCCCCCC' -Headers @('', 'Environment', 'Ring', 'Updates', 'Held', 'Up to date', 'Excluded', 'No match', 'F&O') -Rows $envRows -Cells @(
-            { if ($args[0].Status -ne 'ok') { '❌' } elseif ($args[0].Updates -gt 0) { '🔄' } elseif ($args[0].Held -gt 0) { '⏸️' } else { '✔️' } },
-            { if ($args[0].Status -ne 'ok') { "$($args[0].Environment) – $($args[0].Status)" } else { $args[0].Environment } },
-            { $args[0].Ring }, { $args[0].Updates }, { $args[0].Held }, { $args[0].UpToDate }, { $args[0].Excluded }, { $args[0].NoMatch }, { $args[0].FinOps })
+        # Updates and Up to date always show. Held, Excluded and No match
+        # show only when some environment has one.
+        $cols = [System.Collections.Generic.List[object]]::new()
+        $cols.Add(@{ H = ''; A = 'C'; C = { if ($args[0].Status -ne 'ok') { '❌' } elseif ($args[0].Updates -gt 0) { '🔄' } elseif ($args[0].Held -gt 0) { '⏸️' } else { '✔️' } } })
+        $cols.Add(@{ H = 'Environment'; A = 'L'; C = { if ($args[0].Status -ne 'ok') { "$($args[0].Environment) – $($args[0].Status)" } else { $args[0].Environment } } })
+        $cols.Add(@{ H = 'Ring'; A = 'L'; C = { $args[0].Ring } })
+        $cols.Add(@{ H = 'Updates'; A = 'C'; C = { $args[0].Updates } })
+        foreach ($opt in @(@('Held', 'Held'), @('Excluded', 'Excluded'), @('NoMatch', 'No match'))) {
+            $prop = $opt[0]
+            if (@($envRows | Where-Object { $_.$prop -gt 0 }).Count -gt 0) { $cols.Add(@{ H = $opt[1]; A = 'C'; C = [scriptblock]::Create("`$args[0].$prop") }) }
+            if ($prop -eq 'Held') { $cols.Add(@{ H = 'Up to date'; A = 'C'; C = { $args[0].UpToDate } }) }
+        }
+        $cols.Add(@{ H = 'F&O'; A = 'C'; C = { $args[0].FinOps } })
+        $md += ConvertTo-MdTable -Align (($cols | ForEach-Object { $_.A }) -join '') -Headers @($cols | ForEach-Object { $_.H }) -Rows $envRows -Cells @($cols | ForEach-Object { $_.C })
         $md += ''
     }
     if ((Get-Count $foRows) -gt 0 -and -not $isApplyStage) {
         $md += '### Finance and Operations'
-        $md += ConvertTo-MdTable -Headers @('Environment', 'Ring', 'Application', 'Train', 'Deployment', 'Maintenance', 'Offered') -Rows $foRows -Cells @({ $args[0].Environment }, { $args[0].Ring }, { $args[0].Application }, { $args[0].Train }, { $args[0].Deployment }, { (@($args[0].MaintenanceCadence, $args[0].MaintenanceDays) | Where-Object { $_ }) -join ' ' }, { $args[0].Offered })
-        if ((Get-Count $foSkips) -gt 0) {
-            $md += ''
-            foreach ($d in $foSkips) { $md += "- **$($d.EnvironmentName)**: $($d.Reason)" }
-        }
+        $foStatus = Get-FinOpsStatusMap -Context $Context
+        foreach ($r in $foRows) { $r | Add-Member -NotePropertyName Status -NotePropertyValue ([string]$foStatus[[string]$r.EnvironmentId]) -Force }
+        $foCols = @(
+            @{ H = 'Environment'; C = { $args[0].Environment }; Always = $true },
+            @{ H = 'Ring'; C = { $args[0].Ring }; Always = $true },
+            @{ H = 'Application'; C = { $args[0].Application }; Always = $true },
+            @{ H = 'Train'; C = { $args[0].Train } },
+            @{ H = 'Deployment'; C = { $args[0].Deployment } },
+            @{ H = 'Maintenance'; C = { (@($args[0].MaintenanceCadence, $args[0].MaintenanceDays) | Where-Object { $_ }) -join ' ' } },
+            @{ H = 'Offered'; C = { $args[0].Offered } },
+            @{ H = 'Status'; C = { $args[0].Status } }
+        )
+        # A column that is empty for every environment adds nothing.
+        $foCols = @($foCols | Where-Object { $c = $_.C; $_.Always -or @($foRows | Where-Object { [string](& $c $_) -ne '' }).Count -gt 0 })
+        $md += ConvertTo-MdTable -Headers @($foCols | ForEach-Object { $_.H }) -Rows $foRows -Cells @($foCols | ForEach-Object { $_.C })
         $md += ''
     }
     if ((Get-Count $Context.Warnings) -gt 0) {
@@ -333,7 +393,10 @@ function Write-RunReport {
         $md += ''
     }
     $mdPath = Join-Path $dir 'summary.md'
-    ($md -join "`n") | Set-Content -Path $mdPath -Encoding utf8
+    if (-not $writeFailed) {
+        try { ($md -join "`n") | Set-Content -Path $mdPath -Encoding utf8 -ErrorAction Stop }
+        catch { $writeFailed = Get-ErrorText $_ }
+    }
 
     # ---------------- report.json ----------------
     $report = [ordered]@{
@@ -349,7 +412,14 @@ function Write-RunReport {
         finOps = $foRows
         errors = @($Context.Errors); warnings = @($Context.Warnings)
     }
-    $report | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $dir 'report.json') -Encoding utf8
+    if (-not $writeFailed) {
+        try { $report | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $dir 'report.json') -Encoding utf8 -ErrorAction Stop }
+        catch { $writeFailed = Get-ErrorText $_ }
+    }
+    if ($writeFailed) {
+        Write-RunWarning "Could not write the reports to '$dir': $writeFailed"
+        return 'SucceededWithIssues'
+    }
 
     Publish-RunSummary -MarkdownPath $mdPath -Title (Get-SummaryTitle -Context $Context)
     Write-Line ''

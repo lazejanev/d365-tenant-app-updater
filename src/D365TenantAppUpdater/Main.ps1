@@ -195,6 +195,14 @@ function Invoke-D365TenantAppUpdate {
     if ($planSaved) {
         $nonProd = Get-Count @($plan.actions | Where-Object Ring -eq 'NonProduction')
         $prod = Get-Count @($plan.actions | Where-Object Ring -eq 'Production')
+        # whatIf, wherever it is set (queue time, variable group, repository
+        # variable), means Plan only: no Apply stage starts and no
+        # production approval is requested.
+        if ($settings.PlanOnly) {
+            if ($nonProd + $prod -gt 0) { Write-Line 'whatIf is on: the Apply stages are skipped.' }
+            $nonProd = 0
+            $prod = 0
+        }
         Set-RunOutput -Name 'hasNonProductionActions' -Value ([string]($nonProd -gt 0)).ToLowerInvariant()
         Set-RunOutput -Name 'hasProductionActions' -Value ([string]($prod -gt 0)).ToLowerInvariant()
         Set-RunOutput -Name 'planFile' -Value $PlanFile

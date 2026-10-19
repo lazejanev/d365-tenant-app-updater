@@ -94,6 +94,12 @@ function New-RunPlan {
         createdUtc   = (Get-Now).ToString('o')
         tenantId     = $Settings.TenantId
         productionRing = $Settings.ProductionRing
+        # Apply stops an action when one of these changed after the plan.
+        settings     = [pscustomobject]@{
+            finOpsUpdateScope = $Settings.FinOpsUpdateScope; finOpsTargetVersion = [string]$Settings.FinOpsTargetVersion
+            finOpsDeploymentTypes = @($Settings.FinOpsDeploymentTypes)
+            productionEnvironments = @($Settings.ProductionEnvironments); productionEnvironmentTypes = @($Settings.ProductionEnvironmentTypes)
+        }
         environments = @($Collected.Environments | ForEach-Object { [pscustomobject]@{ Id = $_.Id; DisplayName = $_.DisplayName; Ring = $_.Ring; Sku = $_.Sku; InstanceUrl = $_.InstanceUrl } })
         actions      = @($all | Where-Object { $_.Outcome -eq 'Action' })
         decisions    = @($all | Where-Object { $_.Outcome -ne 'Action' })
