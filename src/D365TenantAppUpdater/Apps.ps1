@@ -160,7 +160,7 @@ function Get-AppEnvironmentState {
             $uri = $null
             # Follow paging when the API returns it (it has not so far).
             foreach ($p in @('@odata.nextLink', 'nextLink')) {
-                if ($r.Json.PSObject.Properties[$p] -and $r.Json.$p) { $uri = [string]$r.Json.$p }
+                if ($r.Json -and $r.Json.PSObject.Properties[$p] -and $r.Json.$p) { $uri = [string]$r.Json.$p }
             }
             $pages++
             if ($pages -ge 50) { $uri = $null }

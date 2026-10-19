@@ -418,7 +418,8 @@ function Write-RunReport {
     }
     if ($writeFailed) {
         Write-RunWarning "Could not write the reports to '$dir': $writeFailed"
-        return 'SucceededWithIssues'
+        if ($result -eq 'Succeeded') { return 'SucceededWithIssues' }
+        return $result
     }
 
     Publish-RunSummary -MarkdownPath $mdPath -Title (Get-SummaryTitle -Context $Context)
