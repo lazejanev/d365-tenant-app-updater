@@ -94,6 +94,14 @@ function Get-FinOpsMarkerPackage {
     return $null
 }
 
+function Test-FinOpsProvisioningPackage {
+    # True only for the F&O provisioning app itself (unique-name marker).
+    param($Pkg)
+    $un = ([string]$Pkg.uniqueName).ToLowerInvariant()
+    foreach ($m in $script:FinOpsMarkers) { if ($un.Contains($m)) { return $true } }
+    return $false
+}
+
 function Test-AppExcluded {
     <#
     .SYNOPSIS
@@ -233,7 +241,11 @@ function New-AppPlan {
             if (-not $p.uniqueName) { continue }
             $st = [string]$p.state
             if ($st -ne 'Installed' -and -not ($Settings.RetryFailedInstalls -and $st -eq 'InstallFailed')) { continue }
-            if ($s.FinOpsMarker -and $p.uniqueName -eq $s.FinOpsMarker.uniqueName) { continue }
+            # Only the real F&O provisioning app is left alone (Microsoft
+            # updates it with F&O). A package found by the display-name
+            # fallback, such as Copilot for finance and operations apps, only
+            # signals that F&O is there: it is still an app to keep current.
+            if ($s.FinOpsMarker -and $p.uniqueName -eq $s.FinOpsMarker.uniqueName -and (Test-FinOpsProvisioningPackage $p)) { continue }
             $candidates += $p
         }
         $candidates = @(Sort-Items $candidates @({ Get-AppDisplayName $_ }, { [string]$_.uniqueName }))
