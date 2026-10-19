@@ -192,3 +192,26 @@ Describe 'Apply mode' {
         Get-InstallCalls | Should -HaveCount 0
     }
 }
+
+Describe 'Apps that mention Finance and Operations' {
+    BeforeEach {
+        Reset-TestModuleState
+        Mock -ModuleName D365TenantAppUpdater Invoke-WebRequest { Invoke-FakeRequest @PesterBoundParameters }
+    }
+
+    It 'updates Copilot for finance and operations apps where there is no provisioning app (LCS environments)' {
+        # Seen on LCS sandboxes: no F&O provisioning app, so the display-name
+        # fallback finds the Copilot anchor. It must still be updated.
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'lcs' -Name 'LCS UAT' -Apps @(
+                    (New-FakeApp 'msdyn_FnOCopilotAnchor' 'Copilot for finance and operations anchor solution' '1.0.03580.1' '1.0.03561.1'))))
+        $r = Invoke-TestRun -Mode Plan
+        @($r.Plan.actions | Where-Object AppUniqueName -eq 'msdyn_FnOCopilotAnchor') | Should -HaveCount 1
+    }
+
+    It 'never installs the F&O provisioning app itself' {
+        Set-FakeTenant -Environments @((New-FakeEnv -Id 'fo' -Name 'FO' -FinOpsBuild '10.0.2645.136' -Apps @(
+                    (New-FakeApp 'msdyn_FnOCopilotAnchor' 'Copilot for finance and operations anchor solution' '1.0.03580.1' '1.0.03561.1'))))
+        $r = Invoke-TestRun -Mode Plan
+        @($r.Plan.actions | ForEach-Object AppUniqueName) | Should -Be @('msdyn_FnOCopilotAnchor')
+    }
+}
