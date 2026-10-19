@@ -17,3 +17,5 @@ Thumbs.db
 # Azure DevOps / pipeline local artifacts
 _work/
 .azure-pipelines-cache/
+__pycache__/
+*.pyc

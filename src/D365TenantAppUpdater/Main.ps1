@@ -65,7 +65,7 @@ function Invoke-D365TenantAppUpdate {
         across every environment of a tenant.
 
     .DESCRIPTION
-        Collect -> plan -> apply -> wait -> report.
+        Collect -> plan -> apply -> (optional wait, waitForInstallsMinutes > 0) -> report.
           -Mode PlanAndApply (default): plan and apply in one run (v2 behaviour).
           -Mode Plan:  write plan.json and the reports, change nothing.
           -Mode Apply: read plan.json (-PlanFile), re-check every action

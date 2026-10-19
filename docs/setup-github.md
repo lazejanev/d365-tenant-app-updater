@@ -2,7 +2,7 @@
 
 New in v3.0.0. This guide takes you from nothing to a working GitHub Actions workflow. It runs the same module, with the same settings and the same safety rules, as the Azure DevOps pipelines. Using Azure DevOps instead? See [setup-azure-devops.md](setup-azure-devops.md).
 
-The workflow is `.github/workflows/tenant-app-updater.yml`. It has three jobs:
+The workflow is `.github/workflows/tenant-app-updater.yml`. It has three jobs, each on an `ubuntu-24.04` runner:
 
 ```
 Plan  ->  Apply non-production  ->  Apply production
@@ -54,7 +54,7 @@ Variables tab, required:
 
 Optional: any setting from [parameters.md](parameters.md#github-variable-names), for example `ENVIRONMENT_EXCLUDE`, `FINOPS_APPLY_VERSION`, `PRODUCTION_ENVIRONMENTS`. Absent variables use the built-in defaults.
 
-Secrets tab, optional: `D365_CLIENT_SECRET`. With `AUTH_MODE` unset (`Auto`), the workflow signs in with OpenID Connect and only uses the secret if that sign-in is refused (the log then says so, with the reason). Set `AUTH_MODE = Federated` once OIDC works to make sure the secret is never used, and delete the secret.
+Secrets tab, optional: `D365_CLIENT_SECRET`. With `AUTH_MODE` unset (`Auto`), the workflow signs in with OpenID Connect and only uses the secret if that sign-in is refused (the log then says so, with the reason). Set `AUTH_MODE = Federated` once OIDC works to make sure the secret is never used, and delete the secret. The workflow only gives the secret to the three steps that run the updater, never to the other steps of a job.
 
 ## 5. The production environment (optional approval)
 
@@ -62,12 +62,12 @@ Secrets tab, optional: `D365_CLIENT_SECRET`. With `AUTH_MODE` unset (`Auto`), th
 
 By default it has no protection rules, so production follows automatically once non-production proves a version (the production ring, on by default). To have a person approve production, add **Required reviewers** to the environment.
 
-> Required reviewers on environments are free for public repositories. For private repositories they need GitHub Team or Enterprise (or Pro for personal accounts). Without them, the production ring still protects production; there is just no manual gate.
+> Required reviewers on environments are free for public repositories. For private repositories they need GitHub Team or Enterprise (or Pro for personal accounts). Without them, the production ring still protects production. There is just no manual gate.
 
 ## 6. First run (plan only)
 
 - **Actions** tab > **D365 tenant app updater** > **Run workflow**.
-- Set **Plan only** to `true`, run.
+- Set **Plan only** to `true`, run. A `WHAT_IF = true` repository variable has the same effect. `whatIf`, wherever it is set, means Plan only: both Apply jobs are skipped and no production approval is requested.
 - Open the run. The **Plan** job's summary shows the environments in scope (A to Z, each with its ring), the planned actions, anything **Held for production**, the Finance and Operations table, and anything that needs attention. The `plan` artifact holds `plan.json`, `summary.md` and `report.json`.
 - The Plan job log shows `Sign-in : Federated (GitHub OIDC)`.
 - When the plan looks right, run again with **Plan only** = `useVariableOrDefault` (or `false`).
@@ -77,7 +77,7 @@ By default it has no protection rules, so production follows automatically once 
 Uncomment the `schedule:` block in `.github/workflows/tenant-app-updater.yml` and commit to `main`. Times are UTC.
 
 - Scheduled runs use repository variables only (there are no inputs), so set `FINOPS_APPLY_VERSION` and friends as variables.
-- **GitHub disables scheduled workflows in a public repository after 60 days without activity** in the repository. It emails you first; re-enable the workflow in the Actions tab. Private repositories are not affected.
+- **GitHub disables scheduled workflows in a public repository after 60 days without activity** in the repository. It emails you first. Re-enable the workflow in the Actions tab. Private repositories are not affected.
 - With the production ring on, a nightly schedule updates non-production every night and production the night after non-production has run a version.
 
 ## 8. What differs from Azure DevOps
@@ -86,10 +86,10 @@ Uncomment the `schedule:` block in `.github/workflows/tenant-app-updater.yml` an
 |---|---|---|
 | Settings | Variable group `D365-TenantAppUpdater`, setting names (`environmentExclude`) | Repository variables, UPPER_SNAKE names (`ENVIRONMENT_EXCLUDE`) |
 | Sign-in | Client secret, or federated service connection (preview) | OpenID Connect, secret as backup |
-| Production gate | Environment `d365-production`, Approvals check | Environment `d365-production`, Required reviewers |
+| Production gate | Optional: an environment you create (for example `d365-production`) with an Approvals check, named in `productionApprovalEnvironment` | Environment `d365-production`, Required reviewers |
 | Run summary | Extensions tab | Job summary |
-| A run with issues | Orange (SucceededWithIssues) | Green with warning annotations (GitHub has no orange state); set `FAIL_ON_ISSUES = true` to fail it |
-| PAC CLI fallback (`usePacFallback`) | Supported with the client secret | Not installed on the runner; apps that need the admin center wizard are reported instead |
+| A run with issues | Orange (SucceededWithIssues) | Green with warning annotations (GitHub has no orange state). Set `FAIL_ON_ISSUES = true` to fail it |
+| PAC CLI fallback (`usePacFallback`) | Supported with the client secret | Not installed on the runner. Apps that need the admin center wizard are reported as **Install in admin center** (`[MANUAL]`) instead |
 
 ## Troubleshooting
 

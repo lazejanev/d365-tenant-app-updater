@@ -10,6 +10,14 @@ This is the most important document in the repository. On a fresh tenant, the pi
 
 Miss any one and the run fails at a predictable point.
 
+In short, for the setup this project was verified against:
+
+| What | Who does it | Where |
+|---|---|---|
+| App registration with a secret or federated credential. No Microsoft Graph or Dynamics API permissions, and no F&O-specific API permission | Anyone who can register apps | Microsoft Entra ID |
+| Register it as a Power Platform management app (`New-PowerAppManagementApp`) | A Power Platform Administrator (or Global Administrator) | Once per tenant |
+| Add it as an application user with **System Administrator** | A System Administrator of that environment | Each target environment |
+
 ## 1. App registration: secret or federated credential
 
 - Create the app registration (see [setup-azure-devops.md](setup-azure-devops.md) or [setup-github.md](setup-github.md)).
@@ -55,7 +63,9 @@ The script reads the **installed** version of each app from Dataverse managed so
 - Choose the business unit, then assign a security role that permits reading solutions and managing apps, for example **System Administrator**.
 - Click **Create**.
 
-Repeat for every environment you want the pipeline to manage. This is separate from the tenant-level management app registration in step 2. Skipping it produces `Failed to read Dataverse solution versions for '<env>'`, and the script safely skips that environment rather than installing blindly.
+Adding an application user needs a System Administrator of that environment.
+
+Repeat for every environment you want the pipeline to manage. This is separate from the tenant-level management app registration in step 2. Skipping it produces the warning `<env>: could not read installed solutions, apps skipped (nothing is installed blindly)` in the log, and "solutions unavailable" in the environments table. The script safely skips that environment's apps rather than installing blindly.
 
 Add the app user to any newly created environment as well, or that environment will simply be skipped.
 
@@ -82,10 +92,10 @@ v3 requires **PowerShell 7.2 or later** for the whole run. The Azure DevOps pipe
 |---|---|---|
 | Token acquisition (`invalid_client`, `AADSTS7000218`) | Layer 1 | Recreate the secret, confirm tenant id |
 | `Forbidden` on `scopes/admin/environments` | Layer 2 | `New-PowerAppManagementApp` |
-| Failed to read Dataverse solution versions for an environment | Layer 3 | Add the application user with a role in that environment |
+| "could not read installed solutions, apps skipped" for an environment | Layer 3 | Add the application user with a role in that environment |
 | 403 on a Finance and Operations route | Layer 2 or 3 | Re-check the management app registration, then the app user |
 | 404 `RouteNotFound` on `finopsversions`, while `finopsproperties` succeeds | Not a permissions issue | Intermittent platform behaviour. Re-run. |
-| `AADSTS70021` (federated sign-in) | Layer 1 | The federated credential's issuer, subject or audience does not match; see the setup guide |
+| `AADSTS70021` (federated sign-in) | Layer 1 | The federated credential's issuer, subject or audience does not match. See the setup guide |
 | "requires PowerShell 7.2" | Not a permissions issue | Run with `pwsh` 7.2 or later |
 
 ## Least privilege note

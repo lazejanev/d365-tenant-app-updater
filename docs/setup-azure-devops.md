@@ -7,7 +7,7 @@ Two pipelines are included. Pick one:
 | Pipeline | Sign-in | Status |
 |---|---|---|
 | `azure-pipelines.yml` | Client secret in the variable group | Recommended start |
-| `pipelines/azure-pipelines-federated.yml` | Workload identity federation: no secret stored anywhere | Preview: verify with a Plan-only run first ([section 9](#federated-sign-in-preview)) |
+| `pipelines/azure-pipelines-federated.yml` | Workload identity federation: no secret stored anywhere | Preview: verify with a Plan-only run first ([section 9](#9-federated-sign-in-preview)) |
 
 Both run the same three stages:
 
@@ -58,10 +58,12 @@ The pipeline needs only three variables to run. Everything else has a built-in d
   | `ClientSecret` | The client secret value | **Yes** |
   | `TenantId` | Directory (tenant) ID | No |
 
+The pipeline gives `ClientSecret` to the script as the environment variable `D365_CLIENT_SECRET`, never on the command line, so a secret that contains `$`, `` ` `` or `"` arrives unchanged.
+
 - Optionally add any override variables you want (see [parameters.md](parameters.md)). Common choices:
-  - `productionEnvironments = Training` (treat a sandbox as production; production environments are held until non-production runs a version, `productionRing` is on by default)
+  - `productionEnvironments = Training` (treat a sandbox as production. Production environments are held until non-production runs a version, because `productionRing` is on by default.)
   - `environmentExclude = Production` (never touch production at all)
-  - `finOpsApplyVersion = true` (enable F&O version apply; **changes environments**)
+  - `finOpsApplyVersion = true` (enable F&O version apply, **changes environments**)
   - `finOpsUpdateScope = VersionUpdate` (opt into the next release train instead of the default PQU on the current train)
 - Save.
 
@@ -85,18 +87,30 @@ By default **Apply: production** is a normal job, so production follows automati
 3. In `azure-pipelines.yml` (or `pipelines/azure-pipelines-federated.yml`), set the default of the `productionApprovalEnvironment` parameter to that name, or pick it at queue time.
 4. On the first run, permit the pipeline to use the environment when Azure DevOps asks.
 
-**Apply: production** then runs as a deployment to that environment and waits for approval. With `sync-from-github.yml` in `reset` mode your YAML edit is overwritten by the next sync, so either choose the environment at queue time, use `ff-only`, or keep the change on your own branch.
+**Apply: production** then runs as a deployment to that environment and waits for approval. `sync-from-github.yml` keeps the default you set here when it syncs a new release (also in its default `reset` mode), so you set it once. You can also pick the environment at queue time instead.
 
-The run then waits at **Apply: production** until someone approves, and shows the plan's production actions in the summary of the Plan stage. Apply re-checks every action when it finally runs, so a late approval never installs something different from what was planned.
+The run then waits at **Apply: production** until someone approves, and shows the plan's production actions in the **1. Plan - what was found and decided** summary. When `whatIf` is on, wherever it is set, the Apply stages are skipped and no approval is requested. Apply re-checks every action when it finally runs, so a late approval never installs something different from what was planned.
+
+### Optional: keep in step with GitHub releases
+
+`sync-from-github.yml` brings each new GitHub release into your Azure DevOps repository, weekly on Mondays at 06:00 UTC. Add it as a second pipeline and give the build service **Contribute** (and **Force push** for the default `reset` strategy) on the repository.
+
+- It finds the latest release through the `github.com/<repo>/releases/latest` redirect, and falls back to the GitHub API. If neither works, nothing is synced and the next run tries again.
+- With `reset`, your own edits to these settings are kept and committed on top of the release:
+  - the default of `productionApprovalEnvironment` (`azure-pipelines.yml` and `pipelines/azure-pipelines-federated.yml`)
+  - an uncommented `schedules:` block in those two files
+  - the `serviceConnection` variable of the federated pipeline
+- Any other local edit is replaced by the released file. Put other settings in the variable group, which the sync never touches. With `syncStrategy = ff-only` the sync only moves forward when your branch has no commits of its own, and fails otherwise.
+- `syncRef = main` syncs the newest commit on `main` instead of the latest release.
 
 ## 5. First run (plan only)
 
 - Run the pipeline manually.
-- Set the **Plan only (do not install or apply)** dropdown to `true`. Only the Plan stage runs; both Apply stages are skipped.
-- Open the run's **Extensions** tab (or the `plan` artifact's `summary.md`). Confirm it shows:
+- Set the **Plan only (do not install or apply)** dropdown to `true`. Only the Plan stage runs. Both Apply stages are skipped. `whatIf = true` in the variable group has the same effect: the Plan stage logs "whatIf is on: the Apply stages are skipped."
+- Open the run's **Extensions** tab, section **1. Plan - what was found and decided** (or the `plan` artifact's `summary.md`). Confirm it shows:
   - the environments in scope, A to Z, each with its ring (Production or NonProduction)
   - the **Planned** actions, and anything **Held for production** with the reason
-  - the **Finance and Operations** table, if you have F&O
+  - the **Finance and Operations** table, if you have F&O, with a **Status** per environment (for example "No newer version", "Inventory only", "LCS managed" or "Planned: 10.0.48.8")
   - **Needs attention**, if an environment could not be read (usually a missing application user, see [permissions.md](permissions.md))
 - The log has the same per environment, in the same order, plus the **Effective settings** block.
 - When the plan looks right, run again with **Plan only** set to `false`.
@@ -115,7 +129,7 @@ Dev04 [NonProduction]: 10.0.2645.136 [10.0.48] - no PQU version available for 10
 
 > The environment name above is an illustrative placeholder. Your own log will show your actual environment display names.
 
-The `[10.0.48]` is the release train of the live build. The run summary's **Finance and Operations** table adds the platform version, deployment type, AOS count, maintenance window and every offered version.
+The `[10.0.48]` is the release train of the live build. The run summary's **Finance and Operations** table adds the deployment type, maintenance window, every offered version and a status per environment. A column that is empty for every environment is hidden.
 
 ### Version apply (opt-in, changes environments)
 
@@ -162,7 +176,7 @@ Microsoft has confirmed that the Anchor Solution's version in Dataverse is only 
 - **v2.4.0 and v2.4.1** decided scope from `releaseStage` alone, so `QualityUpdate` could move environments to a new release train.
 - **v2.4.2** fixed that, but read the train from the Anchor Solution, which goes stale after the first apply through this pipeline. Its `VersionUpdate` could also jump several trains or pick a non-released build, and a bare multi-version response was reported as "no versions listed".
 
-Use v2.4.3 or later (v3.0.0 includes every fix) before running with `finOpsApplyVersion = true`. No variable changes are needed for releases 10.0.46 to 10.0.49. Run once with **Plan only** set to `true` and check the `[10.0.xx]` train on each environment line: environments that previously showed "no versions listed" or were skipped may now show a planned apply.
+Use v3 (it includes every fix) before running with `finOpsApplyVersion = true`. No variable changes are needed for releases 10.0.46 to 10.0.49. Run once with **Plan only** set to `true` and check the `[10.0.xx]` train on each environment line: environments that previously showed "no versions listed" or were skipped may now show a planned apply.
 
 ### If you have `updateFinOpsVersion` or `finOpsInventory` from an earlier version
 
@@ -180,13 +194,16 @@ If you want the pipeline to attempt a PAC CLI install for custom-install apps:
 - When the fallback is on, the pipeline automatically installs the `Microsoft.PowerApps.CLI.Tool` .NET tool on the agent.
 - The fallback signs in with the client secret, so it is ignored (with a warning) in `pipelines/azure-pipelines-federated.yml`.
 
-The script tries `pac app-management install-application-package` first and falls back to the legacy `pac application install`. The fallback authenticates with the same service principal. It is best effort: for apps that genuinely require the Power Platform Admin Center wizard it may still be blocked, in which case the app is reported as manual install required.
+The script tries `pac app-management install-application-package` first and falls back to the legacy `pac application install`. The fallback authenticates with the same service principal. It is best effort: for apps that genuinely require the Power Platform Admin Center wizard it may still be blocked, in which case the app is reported as **Install in admin center** (`[MANUAL]`).
 
 The Finance and Operations phase does **not** use the CLI. It calls the REST API directly.
 
 ## 8. Schedule it (optional)
 
-To keep the tenant continuously up to date, open `azure-pipelines.yml`, uncomment the `schedules` block, adjust the cron expression, and commit.
+To keep the tenant continuously up to date, schedule the pipeline in one of two ways:
+
+- **In the YAML.** Open `azure-pipelines.yml` (or `pipelines/azure-pipelines-federated.yml`), uncomment the `schedules` block, adjust the cron expression, and commit. `sync-from-github.yml` keeps an uncommented `schedules` block when it syncs a new release.
+- **In the pipeline's settings.** Edit the pipeline > **...** > **Triggers** > **Scheduled** > **Add**. Nothing in the YAML changes.
 
 With the production ring on (the default), a nightly schedule gives you: non-production updates every night, production updates the night after a non-production environment has run the version. Add `productionSoakDays` to wait longer for apps, or a production approval (section 4) to keep a person in the loop.
 
@@ -197,13 +214,13 @@ If you schedule the pipeline, decide deliberately whether `finOpsApplyVersion` s
 `pipelines/azure-pipelines-federated.yml` signs in without a client secret. The pipeline requests a short-lived OIDC token for a service connection, and Microsoft Entra ID exchanges it for an access token of the same app registration. This pipeline is **preview**: the token exchange is the documented Azure DevOps mechanism, but run it with **Plan only** first to confirm it in your organization.
 
 1. **Create the service connection.** Project settings > Service connections > New > **Azure Resource Manager** > **Workload identity federation (manual)**.
-   - Name it `d365-tenant-app-updater-wif` (or change `serviceConnection` at the top of `pipelines/azure-pipelines-federated.yml`).
+   - Name it `d365-tenant-app-updater-wif` (or change the `serviceConnection` variable in `pipelines/azure-pipelines-federated.yml`. `sync-from-github.yml` keeps your value when it syncs a new release).
    - Use the **same app registration** as the updater: its Application (client) ID and Directory (tenant) ID.
    - Pick a subscription the app can read (give it **Reader** on that subscription if it has no role yet). The updater does not use Azure resources, but the `AzureCLI@2` task signs in to that subscription before it runs the script, and fails if the app has no access to it.
    - Azure DevOps shows an **Issuer** and a **Subject identifier**. Keep the page open.
 2. **Add the federated credential.** Entra ID > App registrations > the app > **Certificates & secrets > Federated credentials > Add credential** > **Other issuer**. Paste the Issuer and Subject identifier. Audience: `api://AzureADTokenExchange`. Save.
 3. Finish the service connection in Azure DevOps (Verify and save).
-4. **Find the service connection ID.** Open the service connection; the ID is the `resourceId` value in the browser's address bar. Add it to the variable group as `serviceConnectionId`.
+4. **Find the service connection ID.** Open the service connection. The ID is the `resourceId` value in the browser's address bar. Add it to the variable group as `serviceConnectionId`.
 5. Add the pipeline from `pipelines/azure-pipelines-federated.yml` and authorize it to use the variable group and the service connection.
 6. Run with **Plan only** = `true`. The log shows `Sign-in : Federated (AzureDevOps OIDC)`.
 
@@ -215,26 +232,28 @@ Keep `ClientId` and `TenantId` in the variable group. (The task may also expose 
 |---|---|---|
 | `Forbidden` on the environments call | Service principal is not registered as a management app | Run `New-PowerAppManagementApp` (see permissions.md) |
 | `invalid_client` / `AADSTS7000218` on token | Wrong secret, expired secret, or wrong tenant | Recreate the secret and confirm `TenantId` |
-| Failed to read Dataverse solution versions | Missing application user or role in that environment | Add the app user with a security role in Dataverse |
-| An app shows as manual install required | It uses the PPAC Custom Install Experience | Install it in PPAC, or add it to `appExclude` |
+| `<environment>: could not read installed solutions, apps skipped (nothing is installed blindly)` | Missing application user or role in that environment | Add the app user with a security role in Dataverse ([permissions.md](permissions.md#3-application-user-per-environment-required)) |
+| An app shows as **Install in admin center** (`[MANUAL]`) | It uses the PPAC Custom Install Experience | Install it in PPAC, or add it to `appExclude` |
 | An environment you expected was skipped | It is in `environmentExclude`, not in `environmentFilter`, or not Dataverse-linked | Check the Effective settings block and the environment list |
 | More apps excluded than expected | A short `appExclude` value matched as a substring | Use the exact unique name or an explicit wildcard |
-| `finopsversions returned HTTP 404 RouteNotFound` | Expected, intermittent platform behaviour | Re-run. See section 6. Not a permissions or config issue. |
+| "versions route unavailable (RouteNotFound)" | Expected, intermittent platform behaviour (`finopsversions` returned HTTP 404 `RouteNotFound`) | Re-run. See section 6. Not a permissions or config issue. |
 | "no PQU version available for 10.0.xx" | No quality update exists yet on the environment's current release train | Expected. Switch `finOpsUpdateScope` to `VersionUpdate` if you want the next release train. |
 | "no version update (next train) available for 10.0.xx" | Nothing released is offered on the next train, or only a later train is offered | Expected. For a deliberate multi-train move, use `Any` with an explicit `finOpsTargetVersion`. |
 | "current release train unknown (build 10.0.xxxx.x is not in Microsoft's PQU schedule or the built-in map yet)" | The release is newer than Microsoft's schedule, or the schedule could not be downloaded | Usually resolves itself on a later run once Microsoft publishes the release. If the log also shows "PQU schedule was not used", check the agent's outbound access to `raw.githubusercontent.com`. |
-| "Microsoft's PQU schedule was not used - ..." | The schedule download failed or the page format changed | The built-in map is used meanwhile. Check outbound access from the agent; nothing else is required. |
+| "Microsoft's PQU schedule was not used - ..." | The schedule download failed or the page format changed | The built-in map is used meanwhile. Check outbound access from the agent. Nothing else is required. |
 | "current release train unknown (no application version reported)" | `finopsproperties` returned no `applicationVersion` | Re-run. If it persists, check the environment in PPAC. |
 | "no Any version available for 10.0.xx" (scope `Any`) | Every offered version is on a lower train than the live build | Expected. A lower train is never applied. |
-| Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v2.4.4. |
-| "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v2.4.3. |
-| "requires PowerShell 7.2" | Running under Windows PowerShell 5.1 | v3 requires PowerShell 7.2 or later. The pipelines use it already; locally, run with `pwsh`. |
+| Environments moved to a new release train with `QualityUpdate` scope | Running v2.4.0 or v2.4.1 | Upgrade to v3. |
+| "no versions listed" although PPAC shows updates | Running v2.4.2 or earlier, with a multi-version response | Upgrade to v3. |
+| "requires PowerShell 7.2" | Running under Windows PowerShell 5.1 | v3 requires PowerShell 7.2 or later. The pipelines use it already. Locally, run with `pwsh`. |
 | **Held for production** for a version | No non-production environment in scope runs it yet | Expected (`productionRing = true`). It is applied once non-production has it. Set `productionRing = false` to update everything at once. |
-| "Environment d365-production could not be found. The environment does not exist or has not been authorized for use." | v3.0.0 before this fix referenced an approval environment by default, and Azure DevOps does not create environments for synced YAML | Update to the latest version (no environment by default), or create the environment under **Pipelines > Environments** |
-| `Stale` in an Apply stage | The available version changed, or the F&O version is no longer offered, between Plan and Apply | Expected. The next run plans again. |
-| `TimedOut` for an app install | The install is still running after `waitForInstallsMinutes` | Not a failure. The next run sees the result. Increase `waitForInstallsMinutes` if you want to wait longer. |
+| "Environment d365-production could not be found. The environment does not exist or has not been authorized for use." | `productionApprovalEnvironment` names an environment that does not exist yet. Azure DevOps does not create environments for synced YAML | Create the environment under **Pipelines > Environments** (section 4), or set `productionApprovalEnvironment` back to `none` |
+| `[CHANGED]` **Changed since plan** in an Apply stage | The available version changed, the F&O version is no longer offered, or the installed version can no longer be read, between Plan and Apply | Expected. The next run plans again. |
+| `[RUNNING]` **Still running** for an app install | The install is still running after `waitForInstallsMinutes` | Not a failure. The next run sees the result. Increase `waitForInstallsMinutes` if you want to wait longer. |
 | Run is orange (SucceededWithIssues) | Something could not be read or an install failed | See **Needs attention** in the summary. Set `failOnIssues = true` to fail the Apply stages instead (the Plan stage is never failed for this). |
-| An action shows `Stopped` in an Apply stage | The settings changed after the plan was made (for example `environmentExclude`, `appExclude` or `finOpsApplyVersion`) | Expected: Apply always honours the current settings. |
+| An action shows `[STOPPED]` **Stopped by settings** in an Apply stage | The settings changed after the plan was made (for example `environmentExclude`, `appExclude`, `finOpsApplyVersion` or `finOpsUpdateScope`), or the environment is now production | Expected: Apply always honours the current settings. The full list is in [parameters.md](parameters.md#run-modes-v3). |
+| `[RETRY]` **Retry planned** or **Retry started** | The last install of that app failed in Power Platform, and `retryFailedInstalls` is on | The run tries again. If it keeps failing, install it from the admin center, or add it to `appExclude`. |
+| An Apply artifact is named `apply-nonproduction-attempt-2`, or a Plan artifact `plan-failed-attempt-1` | A failed job was re-run, or the Plan stage failed | Expected. An artifact name can be used once per run, so a re-run publishes under the attempt number. The `plan` artifact is published only when Plan succeeded. |
 | "Could not get an Azure DevOps OIDC token" | Federated pipeline: wrong `serviceConnectionId`, or the pipeline is not authorized for the service connection | Check section 9, steps 4 and 5. |
 | `AADSTS70021: No matching federated identity record` | The federated credential's issuer or subject does not match | Copy them again from the service connection (section 9, step 2). |
 | A warning names `updateFinOpsVersion` or `finOpsInventory` | A retired variable is still in the group | Delete it. It has no effect either way. |

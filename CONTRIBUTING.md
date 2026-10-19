@@ -21,6 +21,7 @@ When you open an issue, include:
 
 ```
 scripts/Update-TenantApps.ps1          thin entry point (parameters -> module)
+scripts/sync_keep_settings.py          keeps local pipeline settings when sync-from-github.yml resets
 src/D365TenantAppUpdater/
   D365TenantAppUpdater.psd1            ModuleVersion: the ONLY place the version lives
   D365TenantAppUpdater.psm1            loads the files below in a fixed order
@@ -53,7 +54,7 @@ Rules that keep it that way:
 - Every HTTP call goes through `Invoke-Http`. Tests mock `Invoke-WebRequest` once, with the fake tenant.
 - Collect first, decide second, act third. Decisions are pure functions of collected data, so the production ring sees every environment, and tests do not need a tenant.
 - Anything listed or processed is sorted with `Sort-Items` / `Sort-ByDisplayName` (natural, ordinal A to Z). Never `Sort-Object` on names: it compares with culture rules, so Windows and Linux agents would disagree.
-- Status colours go through `Write-Colored` (Host.ps1) and always repeat a text tag; colour is never the only signal.
+- Status colours go through `Write-Colored` (Host.ps1) and always repeat a text tag. Colour is never the only signal.
 - Diagrams: edit `docs/diagrams/*.mmd` and re-render the matching `docs/images/*.svg` (see docs/architecture.md).
 
 ## Running the tests
@@ -65,7 +66,7 @@ Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPubl
 Invoke-Pester ./tests
 ```
 
-No tenant is contacted. `tests/TestHelpers.ps1` describes a fake tenant (`New-FakeEnv`, `New-FakeApp`, `Set-FakeTenant`) that answers every call the module makes. CI (`.github/workflows/ci.yml`) runs the suite on Linux and Windows, PSScriptAnalyzer, and a YAML syntax check on every pull request.
+No tenant is contacted. `tests/TestHelpers.ps1` describes a fake tenant (`New-FakeEnv`, `New-FakeApp`, `Set-FakeTenant`) that answers every call the module makes. CI (`.github/workflows/ci.yml`) runs the suite on Linux and Windows, PSScriptAnalyzer, a YAML syntax check and `tests/sync_keep_settings_test.py` (`python3 tests/sync_keep_settings_test.py`) on every pull request.
 
 ## Submitting a pull request
 
@@ -79,9 +80,9 @@ No tenant is contacted. `tests/TestHelpers.ps1` describes a fake tenant (`New-Fa
 ## Coding style
 
 - PowerShell: prefer approved verbs and clear parameter names.
-- Guard collection counts with the `Get-Count` helper; do not rely on `.Count` of possibly-empty or scalar values.
+- Guard collection counts with the `Get-Count` helper. Do not rely on `.Count` of possibly-empty or scalar values.
 - Keep every configurable value overridable through the variable group, with a sensible default in the script.
-- Fail loudly on real errors, but classify custom-install apps as manual-required rather than failures.
+- Fail loudly on real errors, but report custom-install apps as **Install in admin center** (`[MANUAL]`) rather than as failures.
 - Report what an API returned. Do not assert a cause that has not been verified.
 - Each Finance and Operations capability gets exactly one variable, and its default is the safe/inert value. Do not introduce a second variable, alias, or default that can produce the same effect as an existing switch.
 - **Use a platform label only for the question it actually answers.** `finopsversions` returns `releaseStage` (`QualityUpdate`, `GeneralAvailability`, ...). It describes the build itself, not the build's relationship to a given environment. A quality update on a newer release train is still staged `QualityUpdate`. Before using any API field in a decision, verify what it is relative to - the build, the environment, or the tenant.
@@ -92,15 +93,15 @@ These are not style preferences. Each one has already caused a real failure in t
 
 ### 1. Never let a local variable collide with a parameter name
 
-PowerShell variable names are **case-insensitive**. A local named `$finOpsOnly` is the *same variable* as a `[string]` parameter `$FinOpsOnly`. Assigning a boolean to it coerces the value to the string `"False"`, which is **truthy**, so a guard fires when it should not. This once skipped the entire application phase. In v3 all settings live in one `$settings` object; keep it that way, and never reuse a parameter name for a local.
+PowerShell variable names are **case-insensitive**. A local named `$finOpsOnly` is the *same variable* as a `[string]` parameter `$FinOpsOnly`. Assigning a boolean to it coerces the value to the string `"False"`, which is **truthy**, so a guard fires when it should not. This once skipped the entire application phase. In v3 all settings live in one `$settings` object. Keep it that way, and never reuse a parameter name for a local.
 
 ### 2. The exit code is decided in one place
 
-Any external tool (notably `pac`) that leaves a non-zero `$LASTEXITCODE` would fail the task even when the run succeeded. Reset it after **every** external invocation, including in the `catch` block. `Complete-Run` (Host.ps1) is the only place that decides the result; `Invoke-D365TenantAppUpdate` returns exactly one integer and the entry script exits with it. A test checks that nothing else leaks onto the pipeline.
+Any external tool (notably `pac`) that leaves a non-zero `$LASTEXITCODE` would fail the task even when the run succeeded. Reset it after **every** external invocation, including in the `catch` block. `Complete-Run` (Host.ps1) is the only place that decides the result. `Invoke-D365TenantAppUpdate` returns exactly one integer and the entry script exits with it. A test checks that nothing else leaks onto the pipeline.
 
 ### 3. Read the HTTP error body from the right place
 
-PowerShell puts the HTTP response body in `$_.ErrorDetails.Message`, **not** `$_.Exception.Message`. Reading only the latter once misclassified nine "manual install required" apps as failures. Use the `Get-ErrorText` helper.
+PowerShell puts the HTTP response body in `$_.ErrorDetails.Message`, **not** `$_.Exception.Message`. Reading only the latter once misclassified nine apps that need the admin center install wizard (now reported as **Install in admin center**, `[MANUAL]`) as failures. Use the `Get-ErrorText` helper.
 
 ### 4. Do not short-circuit a probe across environments
 
@@ -116,7 +117,7 @@ Microsoft has confirmed that the F&O Provisioning App Anchor Solution version in
 
 The Anchor Solution may be used to **detect** that F&O is installed (presence). Its **version** must not be used for anything: not the train, not a guard, not a label.
 
-The current release train comes from the **live application build** (`applicationVersion` from `finopsproperties`) through the build-prefix map, which is built on every run from Microsoft's [PQU release schedule](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule). Do not add a step that requires users to maintain anything by hand. The built-in map is only a fallback for when the download fails; if you extend it, take the prefix from that page's "Application Version" column and cite it in the commit.
+The current release train comes from the **live application build** (`applicationVersion` from `finopsproperties`) through the build-prefix map, which is built on every run from Microsoft's [PQU release schedule](https://learn.microsoft.com/dynamics365/fin-ops-core/dev-itpro/get-started/quality-updates-schedule). Do not add a step that requires users to maintain anything by hand. The built-in map is only a fallback for when the download fails. If you extend it, take the prefix from that page's "Application Version" column and cite it in the commit.
 
 ### 7. An update scope must fail safe
 
@@ -149,15 +150,15 @@ Missing a patch is acceptable. Moving an environment further than the operator a
 - PSScriptAnalyzer reports no errors (CI).
 - The YAML parses (CI).
 - `$LASTEXITCODE` is reset after every external call.
-- Any change to `finOpsUpdateScope` is covered by `tests/Scenario/FinOpsScenarios.Tests.ps1`, which includes: a version on a **newer** release train staged `QualityUpdate`; a version **two** trains ahead; a non-released stage; a version on a **lower** train than the live build; an **unknown** build prefix; and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
+- Any change to `finOpsUpdateScope` is covered by `tests/Scenario/FinOpsScenarios.Tests.ps1`, which includes: a version on a **newer** release train staged `QualityUpdate`, a version **two** trains ahead, a non-released stage, a version on a **lower** train than the live build, an **unknown** build prefix, and a `finopsversions` response with **two or more** entries, both as a bare array and wrapped in `value`.
 
 **Always run with `whatIf = true` first.**
 
 ## Releasing (maintainer)
 
-1. Bump `ModuleVersion` in `src/D365TenantAppUpdater/D365TenantAppUpdater.psd1`, add the version's section to `CHANGELOG.md` (a short Highlights part first: it becomes the GitHub release notes), update the README badge, merge to `main`.
+1. Bump `ModuleVersion` in `src/D365TenantAppUpdater/D365TenantAppUpdater.psd1`, add the version's section to `CHANGELOG.md` (start it with a short Highlights part), update the README badge, merge to `main`. The whole section for the version becomes the GitHub release notes.
 2. Tag and push: `git tag v3.0.0 && git push origin v3.0.0`.
-3. `.github/workflows/release.yml` checks the tag matches the manifest, runs the tests, and publishes the GitHub release with the notes from `CHANGELOG.md` and a zip.
+3. `.github/workflows/release.yml` checks the tag matches the manifest, runs the tests, and publishes the GitHub release with the version's `CHANGELOG.md` section as notes and a zip. If you made the release in the GitHub web UI first, the workflow keeps its title and notes and only attaches the zip. A release for a tag lower than the highest existing tag (for example a v2 patch after v3) is not marked Latest, so synced Azure DevOps copies do not move back.
 4. Azure DevOps mirrors using `sync-from-github.yml` pick up the new release on their next sync.
 
 ## Security

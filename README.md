@@ -26,7 +26,7 @@
 
 If you run Dynamics 365 across more than a couple of environments, you know the ritual. Open the Power Platform Admin Center, pick an environment, open its Dynamics 365 apps, check each one for an update, install, wait, and then repeat for the next environment, and the next. Multiply that by every environment on the tenant and every first-party app, and app maintenance quietly eats hours you never get back.
 
-This project turns that chore into a hands-off, repeatable, tenant-wide operation. A service principal signs in non-interactively, the run discovers every Dataverse environment on the tenant, compares the installed version of each app with the latest available version, and installs the updates that are genuinely newer. Only apps already installed in an environment are touched; nothing new is ever installed.
+This project turns that chore into a hands-off, repeatable, tenant-wide operation. A service principal signs in non-interactively, the run discovers every Dataverse environment on the tenant, compares the installed version of each app with the latest available version, and installs the updates that are genuinely newer. Only apps already installed in an environment are touched. Nothing new is ever installed.
 
 It also reports a **Finance and Operations inventory** across the tenant, and can apply F&O quality updates (PQUs) or move to the next release, with guards that make it impossible to jump further than you asked.
 
@@ -38,11 +38,11 @@ Non-production environments update as soon as something is available, so you tes
 - **Plan, then apply.** Three stages: Plan (changes nothing), Apply non-production, Apply production. Optional approval on production.
 - **GitHub Actions**, alongside Azure DevOps. Same module, same rules.
 - **No client secret needed.** OpenID Connect on GitHub, workload identity federation on Azure DevOps (preview). The secret still works, and is the backup.
-- **You see the outcome.** Every run publishes a summary on the run page; installs triggered by one run are reported by the next.
+- **You see the outcome.** Every run publishes a summary on the run page. Installs triggered by one run are reported by the next.
 - **A to Z.** Environments and apps are processed and reported alphabetically, numbers in numeric order (Dev2 before Dev10), the same on every agent.
-- **A results board.** The log ends with one colour-coded line per app, grouped by environment; the run page shows the same with counters.
+- **A results board.** The log ends with one colour-coded line per app, grouped by environment. The run page shows the same with counters.
 - **Architecture diagrams.** [docs/architecture.md](docs/architecture.md).
-- **Tested.** 141 automated tests on every change, no tenant required.
+- **Tested.** Over 150 automated tests on every change, no tenant required.
 
 Full list: [CHANGELOG.md](CHANGELOG.md).
 
@@ -66,12 +66,12 @@ How each decision is made, the module layout and the sign-in flow: [docs/archite
 
 | | Non-production | Production |
 |---|---|---|
-| Which environments | Everything else: Sandbox, Developer, Trial, ... | PPAC type Production, anything in `productionEnvironments`, F&O `UnifiedProduction` / `LCSProduction` |
+| Which environments | Everything else: Sandbox, Developer, Trial, ... | PPAC type Production, anything in `productionEnvironments`, F&O `UnifiedProduction` / `LCSProduction`, and any environment whose type is not reported |
 | Apps | Updated as soon as a newer version is available | Updated when at least one non-production environment already has that version or newer (optionally for `productionSoakDays`) |
 | Finance and Operations | Per `finOpsUpdateScope` | Same, once a non-production F&O environment runs the version |
-| Approval | No | Optional (Azure DevOps: `productionApprovalEnvironment`; GitHub: `d365-production` reviewers) |
+| Approval | No | Optional (Azure DevOps: `productionApprovalEnvironment`, GitHub: `d365-production` reviewers) |
 
-On a nightly schedule this means: non-production updates every night; production updates the night after non-production has run the version. Set `productionRing = false` to update everything at once, as in v2. Details: [docs/parameters.md](docs/parameters.md#production-ring-v3).
+On a nightly schedule this means: non-production updates every night, and production updates the night after non-production has run the version. Set `productionRing = false` to update everything at once, as in v2. Details: [docs/parameters.md](docs/parameters.md#production-ring-v3).
 
 ## Requirements
 
@@ -96,7 +96,7 @@ In short:
 1. Create the Entra ID app registration.
 2. Register it as a Power Platform management application, and add it as an application user in each environment ([permissions](docs/permissions.md)).
 3. Azure DevOps: create the `D365-TenantAppUpdater` variable group (`ClientId`, `ClientSecret`, `TenantId`) and add `azure-pipelines.yml`. GitHub: add the federated credentials and the `D365_CLIENT_ID` / `D365_TENANT_ID` variables.
-4. Run with **Plan only** = `true` and read the summary on the run page.
+4. Run with **Plan only** = `true` and read the summary on the run page. `whatIf = true`, wherever it is set, means Plan only: the Apply stages are skipped.
 5. Run for real. Optionally schedule it.
 
 ## Configuration
@@ -108,13 +108,13 @@ The most used settings:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `whatIf` | `false` | Plan only. Report what would change, change nothing. |
+| `whatIf` | `false` | Plan only. Report what would change, change nothing. The Apply stages are skipped and no production approval is requested. |
 | `productionRing` | `true` | Production only takes versions non-production already runs. |
 | `productionEnvironments` | (blank) | Extra environments to treat as production (names or ids). |
 | `productionSoakDays` | `0` | Apps: how long non-production must run a version before production gets it. |
 | `environmentFilter` / `environmentExclude` | (all) / (none) | Which environments are in scope. |
 | `appExclude` | (blank) | Apps to always skip (exact names or `*` wildcards). |
-| `waitForInstallsMinutes` | `0` | `0` = trigger installs and move on; the next run reports the outcome. Set minutes to wait and report each install in the same run. |
+| `waitForInstallsMinutes` | `0` | `0` = trigger installs and move on. The next run reports the outcome. Set minutes to wait and report each install in the same run. |
 | `finOpsApplyVersion` | `false` | **The only F&O on/off switch.** Changes environments when true. |
 | `finOpsUpdateScope` | `QualityUpdate` | `QualityUpdate` (PQU on the current release), `VersionUpdate` (next release only), `Any`. |
 | `authMode` | `Auto` | `Auto` (federated when available, secret as backup), `Federated`, `ClientSecret`. |
@@ -186,26 +186,26 @@ The `finopsversions` route has been observed to intermittently return HTTP 404 `
 | `azure-pipelines.yml` | Azure DevOps | The updater, client-secret sign-in. Plan, Apply non-production, Apply production. |
 | `pipelines/azure-pipelines-federated.yml` | Azure DevOps | The same, with workload identity federation (preview). |
 | `pipelines/templates/` | Azure DevOps | `stages.yml` (the three stages) and `run-updater.yml` (the steps of one job), shared by both Azure DevOps pipelines. |
-| `sync-from-github.yml` | Azure DevOps | Optional. Keeps an Azure DevOps copy in step with the **latest GitHub release** (or `main`). Weekly, Mondays 06:00 UTC. Needs Contribute (and Force push for `reset`) for the build service on the repository, per project. |
+| `sync-from-github.yml` | Azure DevOps | Optional. Keeps an Azure DevOps copy in step with the **latest GitHub release** (or `main`). Weekly, Mondays 06:00 UTC. Keeps your production approval environment, schedule and federated service connection. Needs Contribute (and Force push for `reset`) for the build service on the repository, per project. |
 | `.github/workflows/tenant-app-updater.yml` | GitHub | The updater: plan, apply-nonproduction, apply-production. |
 | `.github/workflows/ci.yml` | GitHub | Tests, PSScriptAnalyzer and YAML checks on every pull request. |
-| `.github/workflows/release.yml` | GitHub | Publishes a GitHub release when a version tag is pushed. |
+| `.github/workflows/release.yml` | GitHub | Publishes a GitHub release when a version tag is pushed, with the version's whole `CHANGELOG.md` section as notes and a zip. If the release already exists (for example made in the GitHub web UI), it keeps its title and notes and only attaches the zip. A release for a tag lower than the highest existing tag is not marked Latest. |
 
 The root holds only what a platform requires there: `azure-pipelines.yml` and `sync-from-github.yml` stay at the root because existing Azure DevOps pipelines point at those paths, and GitHub only reads `.github/workflows/`. Everything else has one home: Azure DevOps in `pipelines/`, the module in `src/`, the entry point in `scripts/`, tests in `tests/`, documentation in `docs/`.
 
 ### What each run produces
 
-- **The results board**, the last view in the log: every environment A to Z, and under it one colour-coded line per app that was updated, is updating, is held for production or failed. Each line starts with a tag (`[UPDATED]`, `[RUNNING]`, `[HELD]`, `[FAILED]`, ...), so it reads the same without colour.
+- **The results board**, the last view in the log: every environment A to Z, and under it one colour-coded line per app that was updated, is updating, is held for production or failed. Each line starts with a tag (`[UPDATED]`, `[RUNNING]`, `[RETRY]`, `[HELD]`, `[FAILED]`, ...), so it reads the same without colour.
 
   ![Results board in the Azure DevOps log](docs/images/log-azure-devops.png)
 
-- **summary.md** on the run page (Azure DevOps Extensions tab, GitHub job summary): counters, the same A to Z list with status icons, **Needs attention**, all environments, and the F&O table.
+- **summary.md** on the run page (Azure DevOps Extensions tab, GitHub job summary): counters, the same A to Z list with status icons, **Needs attention**, all environments, and the F&O table with a status per environment. On Azure DevOps each stage has its own section: **1. Plan - what was found and decided** (the only one with the full inventory), **2. Apply non-production - what was started** and **3. Apply production - what was started**.
 
   ![Run summary](docs/images/run-summary.png)
 
 - **plan.json** and **report.json**, published as run artifacts.
 
-<sub>Screenshots from a demo run against the test suite's fake tenant; the names are made up.</sub>
+<sub>Screenshots from a demo run against the test suite's fake tenant. The names are made up.</sub>
 
 A run where something could not be read or an install failed ends **with issues** (orange on Azure DevOps, warning annotations on GitHub), so a missing application user in one environment never hides behind a green tick. Sign-in or discovery failures fail the run.
 
@@ -223,13 +223,15 @@ Worked examples are in [docs/parameters.md](docs/parameters.md).
 
 ## Custom Install Experience apps
 
-Some first-party apps use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The run detects the API's "Custom Install Experience" response and reports those apps as **needs the admin center install wizard** rather than failing. Add them to `appExclude` to silence them. The F&O Provisioning App is never sent to the apps phase; it is handled by the Finance and Operations phase.
+Some first-party apps use a guided wizard in the Power Platform Admin Center and cannot be installed by the API. The run detects the API's "Custom Install Experience" response and reports those apps as **Install in admin center** (`[MANUAL]`) rather than failing. Add them to `appExclude` to silence them.
+
+Only the real F&O Provisioning App is never sent to the apps phase. It is handled by the Finance and Operations phase. Other apps with "finance and operations" in their name, such as Copilot for finance and operations apps, are updated like any other app.
 
 ## Known limitations
 
 - Targets Dynamics 365 first-party apps. It does not manage third-party or ISV solutions, and never installs an app that is not already installed.
 - Available versions depend on what the tenant's release channel exposes.
-- F&O version applies run for hours; the run triggers them and the next run verifies them.
+- F&O version applies run for hours. The run triggers them and the next run verifies them.
 - `finopsversions` has shown intermittent `RouteNotFound` responses. See above.
 - LCS managed environments are inventoried only, by design.
 - `pipelines/azure-pipelines-federated.yml` is preview until confirmed in more organizations.
