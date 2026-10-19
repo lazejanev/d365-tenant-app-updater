@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -43,7 +43,7 @@ jobs:
 
   analyze:
     name: PSScriptAnalyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Analyze
@@ -61,7 +61,7 @@ jobs:
 
   yaml:
     name: YAML syntax
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Parse pipeline and workflow files
@@ -79,3 +79,5 @@ jobs:
                   print('FAIL', f, e)
           sys.exit(1 if bad else 0)
           PY
+      - name: Test the sync settings keeper
+        run: python3 tests/sync_keep_settings_test.py

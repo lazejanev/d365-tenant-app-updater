@@ -94,7 +94,8 @@ steps:
       - pwsh: |
           $ErrorActionPreference = 'Stop'
           Write-Host 'Installing Power Platform CLI (latest)'
-          dotnet tool install --global Microsoft.PowerApps.CLI.Tool
+          # update installs it when missing and does not fail on a reused agent.
+          dotnet tool update --global Microsoft.PowerApps.CLI.Tool
           Write-Host "##vso[task.prependpath]$HOME/.dotnet/tools"
         displayName: 'Install Power Platform CLI (usePacFallback)'
         condition: >
@@ -111,9 +112,10 @@ steps:
         filePath: '$(Build.SourcesDirectory)/scripts/Update-TenantApps.ps1'
         pwsh: true
         failOnStderr: false
+        # The secret is passed in the environment, never on the command
+        # line: a secret with $, ` or " in it would be changed by PowerShell.
         arguments: >
           -ClientId "$(ClientId)"
-          -ClientSecret "$(ClientSecret)"
           -TenantId "$(TenantId)"
           -Mode ${{ parameters.mode }}
           -Ring ${{ parameters.ring }}
@@ -121,6 +123,7 @@ steps:
           -PlanFile "${{ parameters.planFile }}"
       env:
         ${{ insert }}: ${{ parameters.settings }}
+        D365_CLIENT_SECRET: $(ClientSecret)
 
   - ${{ if eq(parameters.auth, 'federated') }}:
     - task: AzureCLI@2
@@ -148,7 +151,28 @@ steps:
         # Needed to request the pipeline's OIDC token.
         SYSTEM_ACCESSTOKEN:         $(System.AccessToken)
 
-  - publish: '$(Build.ArtifactStagingDirectory)/${{ parameters.artifact }}'
-    artifact: ${{ parameters.artifact }}
-    displayName: 'Publish ${{ parameters.artifact }}'
-    condition: succeededOrFailed()
+  # An artifact name can be used once per run, so a re-run of a failed job
+  # publishes under a name with the attempt number. The plan is published
+  # as "plan" only when it succeeded, so the Apply stages always read a
+  # complete plan.
+  - ${{ if eq(parameters.mode, 'Plan') }}:
+    - publish: '$(Build.ArtifactStagingDirectory)/${{ parameters.artifact }}'
+      artifact: ${{ parameters.artifact }}
+      displayName: 'Publish ${{ parameters.artifact }}'
+      condition: succeeded()
+    - publish: '$(Build.ArtifactStagingDirectory)/${{ parameters.artifact }}'
+      artifact: '${{ parameters.artifact }}-failed-attempt-$(System.JobAttempt)'
+      displayName: 'Publish ${{ parameters.artifact }} (failed attempt)'
+      condition: failed()
+      continueOnError: true
+  - ${{ else }}:
+    - publish: '$(Build.ArtifactStagingDirectory)/${{ parameters.artifact }}'
+      artifact: ${{ parameters.artifact }}
+      displayName: 'Publish ${{ parameters.artifact }}'
+      condition: and(succeededOrFailed(), eq(variables['System.JobAttempt'], '1'))
+      continueOnError: true
+    - publish: '$(Build.ArtifactStagingDirectory)/${{ parameters.artifact }}'
+      artifact: '${{ parameters.artifact }}-attempt-$(System.JobAttempt)'
+      displayName: 'Publish ${{ parameters.artifact }} (re-run)'
+      condition: and(succeededOrFailed(), ne(variables['System.JobAttempt'], '1'))
+      continueOnError: true

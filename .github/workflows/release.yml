@@ -1,4 +1,6 @@
-# Publishes a GitHub release when a version tag (v3.0.0, ...) is pushed.
+# Publishes a GitHub release when a version tag (v3.0.0, ...) is pushed, or
+# attaches the package to the release when it already exists (a release
+# made in the GitHub web UI creates its tag, which starts this workflow).
 # The tag must match ModuleVersion in the module manifest, the tests must
 # pass, and the release notes come from CHANGELOG.md.
 name: Release
@@ -12,15 +14,20 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # The tag is passed as data, never pasted into a script.
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # all tags, to decide whether this release is Latest
       - name: Check the tag matches the module version
         id: version
         shell: pwsh
         run: |
           $manifest = Import-PowerShellDataFile ./src/D365TenantAppUpdater/D365TenantAppUpdater.psd1
-          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          $tag = $env:TAG.TrimStart('v')
           if ($manifest.ModuleVersion -ne $tag) { Write-Host "::error::Tag v$tag does not match ModuleVersion $($manifest.ModuleVersion)."; exit 1 }
           "version=$tag" >> $env:GITHUB_OUTPUT
       - name: Run tests
@@ -37,11 +44,15 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.version }}'
           $lines = Get-Content ./CHANGELOG.md
-          $start = ($lines | Select-String -Pattern "^## \[?v?$([regex]::Escape($v))\]?" | Select-Object -First 1).LineNumber
+          # "## [3.0.1]" must not match "## [3.0.10]".
+          $start = ($lines | Select-String -Pattern "^## \[?v?$([regex]::Escape($v))\]?(\s|$)" | Select-Object -First 1).LineNumber
           if (-not $start) { Write-Host "::error::CHANGELOG.md has no section for $v."; exit 1 }
-          $rest = $lines[$start..($lines.Count - 1)]
+          $rest = @()
+          if ($start -lt $lines.Count) { $rest = @($lines[$start..($lines.Count - 1)]) }
           $end = ($rest | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
-          if ($end) { $rest = $rest[0..($end - 2)] }
+          if ($end -eq 1) { $rest = @() }
+          elseif ($end) { $rest = @($rest[0..($end - 2)]) }
+          if (-not ($rest -join '').Trim()) { Write-Host "::error::The CHANGELOG.md section for $v is empty."; exit 1 }
           $rest -join "`n" | Set-Content release-notes.md
       - name: Package
         run: |
@@ -58,10 +69,16 @@ jobs:
           # A release made in the GitHub web UI creates the tag too, which
           # starts this workflow. Keep that release's title and notes and
           # only attach (or replace) the package.
-          if gh release view '${{ github.ref_name }}' >/dev/null 2>&1; then
-            gh release upload '${{ github.ref_name }}' "$zip" --clobber
-            echo "Release ${{ github.ref_name }} already exists: package attached, title and notes kept."
-          else
-            gh release create '${{ github.ref_name }}' "$zip" \
-              --title 'v${{ steps.version.outputs.version }}' --notes-file release-notes.md --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip" --clobber
+            echo "Release $TAG already exists: package attached, title and notes kept."
+            exit 0
           fi
+          # Azure DevOps syncs follow the release marked Latest. A patch to an
+          # older major version (v2.4.5 after v3.0.0) must not become Latest,
+          # or every synced tenant would move back to v2.
+          highest=$(git tag -l 'v[0-9]*' | sort -V | tail -n 1)
+          latest=true
+          if [ "$highest" != "$TAG" ]; then latest=false; fi
+          gh release create "$TAG" "$zip" \
+            --title "$TAG" --notes-file release-notes.md --verify-tag --latest="$latest"

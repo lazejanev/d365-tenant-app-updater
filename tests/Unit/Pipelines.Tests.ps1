@@ -45,3 +45,17 @@ Describe 'Azure DevOps pipelines' {
         $t | Should -Match '- job: Apply'
     }
 }
+
+Describe 'Secrets in the pipelines' {
+    It 'never passes the client secret on the command line (Azure DevOps)' {
+        $t = Get-Content -Raw (Join-Path $global:RepoRoot 'pipelines/templates/run-updater.yml')
+        $t | Should -Not -Match '-ClientSecret'
+        $t | Should -Match 'D365_CLIENT_SECRET: \$\(ClientSecret\)'
+    }
+
+    It 'gives the client secret only to the steps that sign in (GitHub)' {
+        $t = Get-Content -Raw (Join-Path $global:RepoRoot '.github/workflows/tenant-app-updater.yml')
+        ([regex]::Matches($t, 'D365_CLIENT_SECRET: \$\{\{ secrets\.D365_CLIENT_SECRET \}\}')).Count | Should -Be 3
+        $t | Should -Not -Match '(?m)^  D365_CLIENT_SECRET:'
+    }
+}
