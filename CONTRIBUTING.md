@@ -4,7 +4,8 @@ Thanks for your interest in improving this project. Issues and pull requests are
 
 ## Ground rules
 
-- Be respectful and constructive. This is a community project maintained in spare time.
+- Be respectful and constructive. This is a community project maintained in spare time. See the [code of conduct](CODE_OF_CONDUCT.md).
+- Security problems go through a private report, not an issue. See [SECURITY.md](SECURITY.md).
 - Never commit secrets. No tenant IDs, environment IDs, application or client IDs, secrets, org URLs, environment names, or customer names. The only required inputs are provided at run time through the variable group.
 - Keep it generic. Nothing in this repo should be tied to a specific customer, tenant, or environment. Use placeholders such as `Dev01` in examples.
 

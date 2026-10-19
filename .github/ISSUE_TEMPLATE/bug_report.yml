@@ -1,0 +1,62 @@
+name: Bug report
+description: Something did not work as expected in a run.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+        **Never paste secrets, tokens, tenant IDs or client IDs.** Replace environment names with neutral ones (Dev01, UAT, Prod) if you prefer.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The first line of the run log shows it, for example "d365-tenant-app-updater 3.0.0".
+      placeholder: 3.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where does it run?
+      options:
+        - Azure DevOps (client secret)
+        - Azure DevOps (federated, preview)
+        - GitHub Actions
+        - Locally
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage?
+      options:
+        - Plan
+        - Apply non-production
+        - Apply production
+        - Sync from GitHub
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Run summary
+      description: Paste the relevant rows of the run summary (Azure DevOps Extensions tab, or the GitHub job summary), or attach report.json with names anonymised.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The lines around the problem, for example the settings block at the start and the RESULTS board at the end.
+      render: text
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings you changed from the defaults
+      description: Names and values only, no secrets. For example productionRing = false, finOpsApplyVersion = true.

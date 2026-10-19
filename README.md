@@ -3,7 +3,7 @@
 **Keep every Dynamics 365 first-party app, and Finance and Operations, up to date across an entire tenant, from Azure DevOps or GitHub Actions. Non-production first, production once it is proven.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)
-![Version 3.0.0](https://img.shields.io/badge/version-3.0.0-1e90ff)
+[![Latest release](https://img.shields.io/github/v/release/lazejanev/d365-tenant-app-updater?color=1e90ff&label=release)](https://github.com/lazejanev/d365-tenant-app-updater/releases/latest)
 [![CI](https://github.com/lazejanev/d365-tenant-app-updater/actions/workflows/ci.yml/badge.svg)](https://github.com/lazejanev/d365-tenant-app-updater/actions/workflows/ci.yml)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-0b3d91)
 ![Community project](https://img.shields.io/badge/status-community%20project-111827)
@@ -17,7 +17,7 @@
 
 **Contents:** [Goal](#the-goal) | [What's new in v3](#whats-new-in-v3) | [How it works](#how-it-works) | [Architecture](docs/architecture.md) | [Production ring](#production-ring) | [Requirements](#requirements) | [Setup](#setup) | [Configuration](#configuration) | [Finance and Operations](#finance-and-operations) | [Pipelines](#pipelines-and-workflows-in-this-repo) | [Parameters](docs/parameters.md)
 
-> **Note**
+> [!NOTE]
 > Community project. This is not an official Microsoft tool. Test it in a non-production tenant or environment before you point it at anything that matters.
 
 > **Upgrading from v2?** Your variable group keeps working. Production is now held back until non-production runs a version, PowerShell 7.2 is required, and the pipeline has three stages. Read [docs/upgrading-to-v3.md](docs/upgrading-to-v3.md).
